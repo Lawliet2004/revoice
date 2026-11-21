@@ -1,0 +1,90 @@
+/* GTK shell and native dialogs use the same paper tokens as Reflow globals.css. */
+@define-color base #f5e7ba;
+@define-color base2 #ecd694;
+@define-color surface #fffae9;
+@define-color surface3 #f7e8b9;
+@define-color line #e6d29f;
+@define-color line_soft #efe0b8;
+@define-color well #faf0d3;
+@define-color ink #29231e;
+@define-color ink2 #4a4038;
+@define-color muted #675b51;
+@define-color accent #79501b;
+@define-color danger #b42d24;
+
+* { font-family: "Segoe UI", "Ubuntu Sans", sans-serif; font-size: 14px; }
+window.revoice { background-color: transparent; color: @ink; }
+window.revoice decoration { background-color: transparent; border-radius: 11px; }
+#revoice-shell { background: @base; border-radius: 0 0 11px 11px; }
+#navigation { background: transparent; }
+#revoice-titlebar {
+  background: #f2d98d; background-image: linear-gradient(to bottom, #f7e4a8, #f1d78e);
+  color: @ink; border: 0; border-radius: 11px 11px 0 0; box-shadow: none;
+  min-height: 36px; padding: 0;
+}
+window.revoice.maximized #revoice-titlebar, window.revoice.maximized #revoice-shell { border-radius: 0; }
+#revoice-titlebar button {
+  min-width: 46px; min-height: 36px; padding: 0; margin: 0;
+  background: transparent; border: 0; border-radius: 0; box-shadow: none;
+}
+#revoice-titlebar button:hover { background: rgba(41, 35, 30, .09); }
+#revoice-titlebar button.titlebar-close:hover { background: rgba(180, 45, 36, .18); }
+#revoice-titlebar button:focus-visible { outline-offset: -3px; }
+label { color: @ink; }
+selection { background: #ead089; color: @ink; }
+#canvas { background: @surface; border: 1px solid @line; border-radius: 18px; }
+#content { background: transparent; }
+#brand-name { font-size: 17px; font-weight: 600; letter-spacing: -0.02em; }
+#nav-button {
+  background: transparent; border: 0; border-radius: 8px; padding: 7px 10px;
+  min-height: 22px; box-shadow: none; text-shadow: none;
+}
+#nav-button label { color: @ink2; font-weight: 500; font-size: 13px; }
+#nav-button:hover, #nav-button.active { background: @base2; }
+#nav-button:hover label, #nav-button.active label { color: @ink; }
+#sidebar-footer { border-top: 1px solid @line; }
+#footer-title { color: @ink; font-size: 13px; font-weight: 600; }
+#footer-desc { color: @muted; font-size: 12px; }
+#page-title, #panel-title, #section-title, #panel-title-large, #manuscript-text {
+  font-family: "Charter", "Bitstream Charter", "Noto Serif", serif;
+  font-weight: 500;
+}
+#page-title { font-size: 28px; }
+#section-title, #panel-title, #manuscript-text { font-size: 17px; }
+#panel-title-large { font-size: 21px; }
+#page-subtitle, #muted { color: @muted; }
+#subtle { font-size: 12px; color: @muted; }
+#status-attention, #status-error { font-size: 13px; }
+#status-attention { color: @accent; }
+#status-error { color: @danger; }
+#settings-panel, #panel { background: @well; border: 1px solid @line_soft; border-radius: 14px; }
+#settings-row + #settings-row { border-top: 1px solid @line_soft; }
+#row-title { font-weight: 600; }
+#section-icon { background: @surface3; border-radius: 8px; }
+#keyboard-cap { color: @ink; background: @surface3; border: 1px solid @line; border-radius: 5px; padding: 2px 6px; }
+button.action, button.secondary, button.minimal {
+  border-radius: 8px; box-shadow: none; text-shadow: none; padding: 7px 12px;
+  min-height: 20px; font-weight: 500; border: 1px solid transparent;
+}
+button.action { color: @surface; background: @ink; }
+button.action:hover { background: @ink2; }
+button.action:disabled { background: @line; color: @muted; }
+button.action label, button.secondary label, button.minimal label { color: inherit; }
+button.secondary, combobox button { background: @surface3; color: @ink; }
+button.secondary:hover, button.minimal:hover { background: @base2; }
+button.minimal { color: @accent; background: transparent; }
+button:focus, entry:focus { outline: 2px solid @accent; outline-offset: 2px; }
+entry, textview { background: @surface; border: 1px solid @line; color: @ink; border-radius: 8px; }
+entry { padding: 7px 10px; min-height: 23px; }
+textview text { background: transparent; color: @ink; }
+combobox button { border: 1px solid @line; box-shadow: none; text-shadow: none; border-radius: 8px; padding: 5px 9px; }
+switch { background: @base2; border: 1px solid @line; box-shadow: none; }
+switch:checked { background: @accent; border-color: @accent; }
+switch slider { background: @surface; border-color: @line; box-shadow: none; }
+#transcript-row { border-bottom: 1px solid @line_soft; }
+#window-pill { background: transparent; }
+#revoice-dialog { background: @surface; color: @ink; }
+scrollbar { background: transparent; }
+scrollbar slider { background: #cdc0ad; border-radius: 8px; min-width: 5px; min-height: 20px; }
+#settings-dialog { background: @surface; border: 1px solid @line; border-radius: 18px; }
+#settings-rail { background: @well; border-right: 1px solid @line_soft; }

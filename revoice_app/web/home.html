@@ -1,0 +1,151 @@
+<body class="manuscript-home">
+<div class="workspace-page dictate-page">
+  <header class="page-heading">
+    <h1>Speak freely.</h1>
+    <select id="language" aria-label="Language"></select>
+  </header>
+  <section class="manuscript" aria-label="Dictation studio">
+    <div class="manuscript-head">
+      <button class="record-button" id="record" aria-label="Start recording">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2m-7 9v3m-3 0h6"/>
+        </svg>
+        <svg id="stop" width="22" height="22" viewBox="0 0 24 24" fill="currentColor" hidden aria-hidden="true">
+          <rect x="5" y="5" width="14" height="14" rx="2"/>
+        </svg>
+      </button>
+      <div class="manuscript-status">
+        <h2 id="status">Ready to dictate</h2>
+        <p class="shortcut-hint" id="hint"></p>
+        <button class="text-link" id="shortcut">Change shortcut</button>
+      </div>
+      <!-- manuscript-illustration -->
+    </div>
+    <textarea id="transcript" class="manuscript-text" aria-label="Transcript"
+      aria-keyshortcuts="Control+Enter"
+      placeholder="Start speaking. Your transcript will appear here, ready to edit and copy into any app."></textarea>
+    <footer class="manuscript-foot">
+      <span id="provider"></span>
+      <div>
+        <button class="button" id="clear">Clear</button>
+        <button class="button primary" id="copy" title="Copy (Ctrl+Enter)">Copy</button>
+      </div>
+    </footer>
+  </section>
+  <p id="feedback" role="status"></p>
+  <section class="recent-section" aria-label="Recently said">
+    <header><h2>Recently said</h2><button class="text-link" id="history">View history ↗</button></header>
+    <div id="recent"></div>
+  </section>
+</div>
+<script>
+const $ = selector => document.querySelector(selector);
+const send = (action, value) => window.webkit.messageHandlers.revoice.postMessage(JSON.stringify({action, value}));
+const transcript = $('#transcript');
+const record = $('#record');
+const language = $('#language');
+let currentText = null;
+let previousState = null;
+let recentKey = '';
+let providerName = '';
+window.updateMeter = level => record.style.setProperty('--level', Math.min(.68, level * .68));
+window.animateArrival = () => {
+  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    $('.workspace-page').animate(
+      [{opacity: .93, transform: 'translateY(3px)'}, {opacity: 1, transform: 'translateY(0)'}],
+      {duration: 220, easing: 'ease-out'},
+    );
+  }
+};
+function refreshDraft() {
+  const text = transcript.value.trim();
+  $('#copy').disabled = !text;
+  $('#clear').disabled = !transcript.value || transcript.readOnly;
+  $('#copy').textContent = 'Copy';
+  const count = text ? text.split(/\s+/).length : 0;
+  $('#provider').textContent = count ? `${providerName} · ${count} ${count === 1 ? 'word' : 'words'}` : providerName;
+}
+window.renderState = state => {
+  const busy = state.state !== 'idle';
+  const recording = state.state === 'recording';
+  record.classList.toggle('is-recording', recording);
+  if (!recording) window.updateMeter(0);
+  record.firstElementChild.hidden = recording;
+  $('#stop').hidden = !recording;
+  $('#status').textContent = recording ? 'Listening' : busy ? 'Finishing dictation' :
+    state.ready ? 'Ready to dictate' : `Connect ${state.provider}`;
+  record.setAttribute('aria-label', recording ? 'Stop recording' : busy ? 'Cancel dictation' :
+    state.ready ? 'Start recording' : `Connect ${state.provider}`);
+  const hint = $('#hint');
+  hint.replaceChildren();
+  if (busy || !state.ready || !state.keys.length) {
+    hint.textContent = recording ? 'Click the microphone to stop.' : busy ? 'Your transcript will appear below.' :
+      state.description;
+  } else {
+    hint.append(state.hold ? 'Hold' : 'Press');
+    state.keys.forEach(value => {
+      const key = document.createElement('kbd');
+      key.textContent = value;
+      hint.append(key);
+    });
+    hint.append('in any app, or click the microphone.');
+  }
+  $('#shortcut').hidden = busy;
+  if (!language.options.length) {
+    state.languages.forEach(([value, name]) => language.add(new Option(name, value)));
+  }
+  language.value = state.language;
+  transcript.readOnly = busy;
+  if (currentText !== state.text || (recording && previousState !== 'recording')) {
+    currentText = state.text;
+    transcript.value = currentText;
+  }
+  previousState = state.state;
+  providerName = state.provider;
+  refreshDraft();
+  $('#feedback').textContent = state.feedback;
+  $('#feedback').dataset.error = state.error;
+  const nextRecent = JSON.stringify(state.recent);
+  if (recentKey !== nextRecent) {
+    recentKey = nextRecent;
+    const recent = $('#recent');
+    recent.replaceChildren();
+    if (!state.recent.length) {
+      const empty = document.createElement('p');
+      empty.textContent = 'Your saved dictations will appear here.';
+      recent.append(empty);
+    }
+    state.recent.forEach(([text, time]) => {
+      const row = document.createElement('div');
+      row.className = 'recent-row';
+      const words = document.createElement('p');
+      words.textContent = text;
+      const when = document.createElement('time');
+      when.textContent = time;
+      const copy = document.createElement('button');
+      copy.className = 'text-link';
+      copy.textContent = 'Copy';
+      copy.addEventListener('click', () => send('copy', text));
+      row.append(words, when, copy);
+      recent.append(row);
+    });
+  }
+};
+window.copyConfirmed = () => { $('#copy').textContent = 'Copied'; };
+record.addEventListener('click', () => send('record'));
+$('#shortcut').addEventListener('click', () => send('shortcut'));
+$('#history').addEventListener('click', () => send('history'));
+language.addEventListener('change', () => send('language', language.value));
+$('#copy').addEventListener('click', () => send('copy', transcript.value));
+$('#clear').addEventListener('click', () => { transcript.value = ''; refreshDraft(); });
+transcript.addEventListener('input', refreshDraft);
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') send('cancel');
+  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && transcript.value.trim()) {
+    event.preventDefault();
+    send('copy', transcript.value);
+  }
+});
+</script>
+</body>

@@ -1,0 +1,41 @@
+<body class="overlay">
+  <!-- The waveform branch of Reflow Overlay.tsx, hosted in Revoice's Wayland layer. -->
+  <div class="hud hud-dark hud-standalone" data-interactive data-style="waveform"
+       data-shape="pill" data-phase="listen" role="status" id="pill" aria-label="Listening">
+    <div class="hud-capsule-row">
+      <span class="capsule-wave" data-active="true" aria-hidden="true"></span>
+    </div>
+    <button class="hud-control hud-stop" title="Cancel dictation" aria-label="Cancel dictation">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+<script>
+const CAPSULE_BARS = [0.35, 0.65, 1, 0.8, 0.55, 0.35, 0.15];
+const pill = document.querySelector('#pill');
+const wave = document.querySelector('.capsule-wave');
+const cancel = document.querySelector('.hud-stop');
+const send = action => window.webkit.messageHandlers.revoice.postMessage(JSON.stringify({action}));
+const bars = CAPSULE_BARS.map((weight, index) => {
+  const bar = document.createElement('span');
+  bar.className = 'capsule-wave-bar';
+  bar.style.setProperty('--bar-weight', weight);
+  bar.style.animationDelay = `${index * -110}ms`;
+  wave.append(bar);
+  return bar;
+});
+window.renderState = ({listening, handsFree, level, reducedMotion}) => {
+  pill.dataset.phase = listening ? 'listen' : 'transcribe';
+  pill.setAttribute('aria-label', handsFree ? 'Hands-free recording' : listening ? 'Listening' : 'Finishing dictation');
+  wave.dataset.active = listening;
+  cancel.hidden = !listening;
+  document.documentElement.classList.toggle('reduce-motion', reducedMotion);
+  const amplitude = Number.isFinite(level) ? Math.max(0, Math.min(1, level * 4)) : 0;
+  bars.forEach((bar, index) => {
+    bar.style.height = `${3 + 17 * CAPSULE_BARS[index] * (listening ? amplitude : 1)}px`;
+  });
+};
+cancel.addEventListener('click', event => { event.stopPropagation(); send('cancel'); });
+pill.addEventListener('click', () => { if (wave.dataset.active === 'true') send('stop'); });
+</script>
+</body>

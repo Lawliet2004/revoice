@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Build and test on Ubuntu 24.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      NO_AT_BRIDGE: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential pkg-config libwayland-dev libwayland-bin desktop-file-utils \
+            python3-gi python3-gi-cairo python3-dbus python3-evdev python3-websockets python3-tk \
+            gir1.2-gtk-3.0 gir1.2-webkit2-4.1 xvfb xauth
+      - name: Build the Debian package
+        run: |
+          sh -n build.sh
+          sh -n build-windows.sh
+          ./build.sh --package
+          dpkg-deb --info dist/*.deb
+          desktop-file-validate io.github.revoice.Revoice.desktop
+      - name: Run Python unit tests
+        run: |
+          /usr/bin/python3 -m compileall -q revoice_app tests windows
+          /usr/bin/python3 -m unittest discover -s tests -v
+      - name: Test the Windows dashboard with synthetic audio
+        run: PYTHONPATH=. xvfb-run -a /usr/bin/python3 tests/windows_smoke.py

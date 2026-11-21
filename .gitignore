@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+auth.json
+settings.json
+history.json
+*.pem
+*.key
+
+# Audio capture and QA output
+*.wav
+*.pcm
+*.aup3
+*.log
