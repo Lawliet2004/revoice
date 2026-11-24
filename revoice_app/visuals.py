@@ -68,11 +68,15 @@ def draw_icon(cr, name, size=20.0):
         cr.stroke()
         line(cr, [(12, 7), (12, 12), (15, 14)])
     elif name == "settings":
-        for y, x in ((6, 8), (12, 15), (18, 11)):
-            line(cr, [(3, y), (x - 2.4, y)])
-            line(cr, [(x + 2.4, y), (21, y)])
-            cr.arc(x, y, 2.1, 0, math.tau)
-            cr.stroke()
+        cr.new_sub_path()
+        for tooth in range(6):
+            for offset, radius in ((-17, 7.5), (-12, 10), (12, 10), (17, 7.5)):
+                angle = math.radians(60 * tooth + offset - 90)
+                cr.line_to(12 + radius * math.cos(angle), 12 + radius * math.sin(angle))
+        cr.close_path()
+        cr.stroke()
+        cr.arc(12, 12, 3.1, 0, math.tau)
+        cr.stroke()
     elif name == "keys":
         round_rect(cr, 2, 5, 20, 14, 3)
         cr.stroke()
@@ -111,13 +115,33 @@ def draw_icon(cr, name, size=20.0):
     elif name == "alert":
         line(cr, [(12, 5), (12, 13)])
         line(cr, [(12, 17), (12, 17.4)])
+    elif name == "look":
+        cr.arc(12, 12, 7.2, 0, math.tau)
+        cr.stroke()
+        cr.arc(12, 12, 2.4, 0, math.tau)
+        cr.fill()
     cr.restore()
+
+
+class Swatch(Gtk.DrawingArea):
+    def __init__(self, color):
+        super().__init__()
+        self.color = color
+        self.set_size_request(12, 12)
+        self.connect("draw", self.paint)
+
+    def paint(self, _area, cr):
+        cr.set_source_rgb(*self.color)
+        cr.arc(6, 6, 4.5, 0, math.tau)
+        cr.fill()
+        return False
 
 
 class Icon(Gtk.DrawingArea):
     def __init__(self, name, size=18, color=PEACH):
         super().__init__()
         self.name, self.size, self.color = name, size, color
+        self.follows_ink = True
         self.set_size_request(size, size)
         self.connect("draw", self.paint)
 
@@ -129,8 +153,21 @@ class Icon(Gtk.DrawingArea):
         return False
 
 
+PILL_WINDOWS = {
+    "compact": (108, 40),  # HUD 100×32, today's pill. Do not change these two numbers.
+    "regular": (164, 52),  # HUD 156×44
+    "large": (220, 68),    # HUD 212×60
+}
+LIVE_PILL_WINDOW = (640, 196)  # HUD 632×188
+
+
+def pill_window(pill_size, live):
+    if live:
+        return LIVE_PILL_WINDOW
+    return PILL_WINDOWS.get(pill_size, PILL_WINDOWS["compact"])
+
+
 class Pill(Gtk.Window):
-    SIZE = (108, 40)
     BOTTOM_MARGIN = 14
 
     def __init__(self, toggle, cancel):
@@ -164,16 +201,39 @@ class Pill(Gtk.Window):
             pass
         self.state = "idle"
         self.energy = self.smoothed = 0.0
+        self.hands_free = False
+        self.look = {}
+        self._size = pill_window("compact", False)
         self.toggle, self.cancel = toggle, cancel
         self.area = LocalView("pill", self.on_action, transparent=True)
         self.area.set_can_focus(False)
-        self.area.set_size_request(*self.SIZE)
-        self.set_default_size(*self.SIZE)
+        self.area.set_size_request(*self._size)
+        self.set_size_request(*self._size)
+        self.set_default_size(*self._size)
         self.area.connect("size-allocate", lambda *_: self.set_shape())
         self.add(self.area)
-        self.connect("realize", lambda *_: GLib.idle_add(self.position))
+        self.connect("realize", self.realized)
         self.connect("delete-event", lambda *_: True)
         GLib.timeout_add(45, self.animate)
+
+    def realized(self, *_args):
+        self._deny_focus()
+        GLib.idle_add(self.position)
+
+    def _deny_focus(self):
+        self.set_accept_focus(False)
+        self.area.set_can_focus(False)
+        native = self.get_window()
+        if native is not None:
+            native.set_accept_focus(False)
+
+    def _use_size(self, size):
+        self._size = size
+        self.area.set_size_request(*size)
+        self.set_size_request(*size)
+        self.set_default_size(*size)
+        self.resize(*size)
+        self._deny_focus()
 
     def position(self):
         display = self.get_display()
@@ -189,7 +249,7 @@ class Pill(Gtk.Window):
             self.layer.set_monitor(self, monitor)
         elif monitor:
             geometry = monitor.get_workarea()
-            width, height = self.SIZE
+            width, height = self._size
             self.move(geometry.x + (geometry.width - width) // 2,
                       geometry.y + geometry.height - height - self.BOTTOM_MARGIN)
         self.set_shape()
@@ -201,23 +261,58 @@ class Pill(Gtk.Window):
             return
         region = cairo.Region()
         if self.state == "recording":
-            # Reflow reserves four transparent pixels around the 100 × 32 CSS capsule.
-            radius = 16
-            for row in range(32):
-                inset = round(radius - math.sqrt(radius ** 2 - (radius - row - .5) ** 2))
-                region.union(cairo.RectangleInt(4 + inset, 4 + row, 100 - 2 * inset, 1))
+            width, height = self._size
+            if self.look.get("live"):
+                # Rounded rectangle, inset 4px. Not a stadium: a 196px window must not grab the desktop.
+                hud_w, hud_h = width - 8, height - 8
+                radius = 22
+                for row in range(hud_h):
+                    if row < radius:
+                        dy = radius - row - .5
+                    elif row >= hud_h - radius:
+                        dy = row + .5 - (hud_h - radius)
+                    else:
+                        dy = None
+                    inset = 0 if dy is None else round(radius - math.sqrt(radius ** 2 - dy ** 2))
+                    region.union(cairo.RectangleInt(4 + inset, 4 + row, hud_w - 2 * inset, 1))
+            elif (width, height) == PILL_WINDOWS["compact"]:
+                # Reflow reserves four transparent pixels around the 100 × 32 CSS capsule.
+                radius = 16
+                for row in range(32):
+                    inset = round(radius - math.sqrt(radius ** 2 - (radius - row - .5) ** 2))
+                    region.union(cairo.RectangleInt(4 + inset, 4 + row, 100 - 2 * inset, 1))
+            else:
+                hud_w, hud_h = width - 8, height - 8
+                radius = hud_h / 2
+                for row in range(hud_h):
+                    inset = round(radius - math.sqrt(radius ** 2 - (radius - row - .5) ** 2))
+                    region.union(cairo.RectangleInt(4 + inset, 4 + row, hud_w - 2 * inset, 1))
         native.input_shape_combine_region(region, 0, 0)
 
-    def update(self, state, hands_free=False):
+    def update(self, state, hands_free=False, **look):
         changed = state != self.state
         self.state = state
         self.hands_free = hands_free
+        for key in ("waveform", "live", "text", "paper", "accent", "ink", "sheet", "pill_size"):
+            if key in look:
+                self.look[key] = look[key]
+        size = pill_window(self.look.get("pill_size", "compact"), bool(self.look.get("live")))
+        resized = size != self._size
         if state == "idle":
+            self.render()
             self.hide()
+            if resized:
+                self._use_size(size)
+                self.position()
+                self.set_shape()
             return
+        if resized:
+            self._use_size(size)
         if changed:
             self.energy = self.smoothed = 0.0
             self.show_all()
+            self._deny_focus()
+        if resized or changed:
             self.position()
             self.set_shape()
         self.render()
@@ -232,9 +327,18 @@ class Pill(Gtk.Window):
     def render(self):
         self.area.render({
             "listening": self.state == "recording",
+            "active": self.state != "idle",
             "handsFree": self.hands_free,
             "level": self.smoothed,
             "reducedMotion": not self.get_settings().props.gtk_enable_animations,
+            "waveform": self.look.get("waveform", "ink"),
+            "live": self.look.get("live", False),
+            "text": self.look.get("text", ""),
+            "paper": self.look.get("paper", False),
+            "accent": self.look.get("accent", "#79501b"),
+            "ink": self.look.get("ink", "#29231e"),
+            "sheet": self.look.get("sheet", "#fffdf2"),
+            "pillSize": self.look.get("pill_size", "compact"),
         })
 
     def animate(self):

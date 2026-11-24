@@ -1,4 +1,4 @@
-<body class="manuscript-home">
+<body class="manuscript-home" data-tone="warm" data-accent="copper" data-corners="soft">
 <div class="workspace-page dictate-page">
   <header class="page-heading">
     <h1>Speak freely.</h1>
@@ -34,8 +34,9 @@
     </footer>
   </section>
   <p id="feedback" role="status"></p>
-  <section class="recent-section" aria-label="Recently said">
-    <header><h2>Recently said</h2><button class="text-link" id="history">View history ↗</button></header>
+  <section class="recent-section" aria-label="Library">
+    <header><h2>Library</h2><button class="text-link" id="history">View library ↗</button></header>
+    <p class="library-note">Text only, kept for 3 days. Recordings are not saved.</p>
     <div id="recent"></div>
   </section>
 </div>
@@ -58,6 +59,17 @@ window.animateArrival = () => {
     );
   }
 };
+function applyLook(look) {
+  if (!look) return;
+  document.body.dataset.tone = look.tone || 'warm';
+  document.body.dataset.accent = look.accent || 'copper';
+  document.body.dataset.corners = look.corners || 'soft';
+  if (look.fontSize) document.documentElement.style.fontSize = look.fontSize;
+  if (look.radiusCard) document.documentElement.style.setProperty('--radius-card', look.radiusCard);
+  if (look.radiusControl) document.documentElement.style.setProperty('--radius-control', look.radiusControl);
+  Object.entries(look.vars || {}).forEach(([name, value]) => document.body.style.setProperty(name, value));
+}
+applyLook(window.__look);
 function refreshDraft() {
   const text = transcript.value.trim();
   $('#copy').disabled = !text;
@@ -67,6 +79,7 @@ function refreshDraft() {
   $('#provider').textContent = count ? `${providerName} · ${count} ${count === 1 ? 'word' : 'words'}` : providerName;
 }
 window.renderState = state => {
+  applyLook(state.appearance);
   const busy = state.state !== 'idle';
   const recording = state.state === 'recording';
   record.classList.toggle('is-recording', recording);
@@ -74,9 +87,9 @@ window.renderState = state => {
   record.firstElementChild.hidden = recording;
   $('#stop').hidden = !recording;
   $('#status').textContent = recording ? 'Listening' : busy ? 'Finishing dictation' :
-    state.ready ? 'Ready to dictate' : `Connect ${state.provider}`;
+    state.ready ? 'Ready to dictate' : (state.connection || `Sign in to ${state.provider}`);
   record.setAttribute('aria-label', recording ? 'Stop recording' : busy ? 'Cancel dictation' :
-    state.ready ? 'Start recording' : `Connect ${state.provider}`);
+    state.ready ? 'Start recording' : (state.connection || `Sign in to ${state.provider}`));
   const hint = $('#hint');
   hint.replaceChildren();
   if (busy || !state.ready || !state.keys.length) {
@@ -97,12 +110,20 @@ window.renderState = state => {
   }
   language.value = state.language;
   transcript.readOnly = busy;
-  if (currentText !== state.text || (recording && previousState !== 'recording')) {
-    currentText = state.text;
-    transcript.value = currentText;
+  if (busy || currentText !== state.text) {
+    if (currentText !== state.text) {
+      currentText = state.text;
+      const follow = transcript.selectionStart === transcript.value.length;
+      transcript.value = currentText;
+      if (follow) transcript.scrollTop = transcript.scrollHeight;
+    }
   }
   previousState = state.state;
-  providerName = state.provider;
+  providerName = state.connection || state.provider;
+  transcript.placeholder = recording
+    ? "Listening…"
+    : "Start speaking. Your transcript will appear here, ready to edit and copy into any app.";
+  transcript.classList.toggle("is-listening", recording);
   refreshDraft();
   $('#feedback').textContent = state.feedback;
   $('#feedback').dataset.error = state.error;
@@ -113,7 +134,8 @@ window.renderState = state => {
     recent.replaceChildren();
     if (!state.recent.length) {
       const empty = document.createElement('p');
-      empty.textContent = 'Your saved dictations will appear here.';
+      empty.className = "library-note";
+      empty.textContent = "Dictated text is kept here for 3 days. Audio is not saved.";
       recent.append(empty);
     }
     state.recent.forEach(([text, time]) => {

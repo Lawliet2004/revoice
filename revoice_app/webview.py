@@ -14,7 +14,7 @@ CONTEXT = None
 
 
 class LocalView(WebKit2.WebView):
-    def __init__(self, page, action, transparent=False):
+    def __init__(self, page, action, transparent=False, appearance=None):
         global CONTEXT
         if CONTEXT is None:
             CONTEXT = WebKit2.WebContext.new_ephemeral()
@@ -35,7 +35,7 @@ class LocalView(WebKit2.WebView):
         self.connect("context-menu", lambda *_: True)
         self.connect("load-changed", self.on_load)
         self.connect("decide-policy", self.on_policy)
-        styles = "\n".join((ASSETS / name).read_text() for name in ("reflow.css", "adapter.css"))
+        styles = "\n".join((ASSETS / name).read_text() for name in ("reflow.css", "adapter.css", "pill.css"))
         content = (ASSETS / f"{page}.html").read_text()
         if page == "home":
             illustration = base64.b64encode((ASSETS / "manuscript-art.webp").read_bytes()).decode("ascii")
@@ -43,13 +43,17 @@ class LocalView(WebKit2.WebView):
                 "<!-- manuscript-illustration -->",
                 f'<img class="manuscript-art" src="data:image/webp;base64,{illustration}" alt="">',
             )
+        boot = f"<script>window.__look = {json.dumps(appearance)};</script>" if appearance else ""
         self.load_html(
             "<!doctype html><html lang='en'><meta charset='utf-8'>"
             "<meta http-equiv='Content-Security-Policy' "
             "content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'\">"
             "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-            f"<style>{styles}</style>{content}</html>", None,
+            f"<style>{styles}</style>{boot}{content}</html>", None,
         )
+
+    def set_paper(self, red, green, blue):
+        self.set_background_color(Gdk.RGBA(red=red, green=green, blue=blue, alpha=1))
 
     def on_message(self, _manager, result):
         try:

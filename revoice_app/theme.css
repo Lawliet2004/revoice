@@ -86,5 +86,42 @@ switch slider { background: @surface; border-color: @line; box-shadow: none; }
 #revoice-dialog { background: @surface; color: @ink; }
 scrollbar { background: transparent; }
 scrollbar slider { background: #cdc0ad; border-radius: 8px; min-width: 5px; min-height: 20px; }
-#settings-dialog { background: @surface; border: 1px solid @line; border-radius: 18px; }
-#settings-rail { background: @well; border-right: 1px solid @line_soft; }
+.settings-backdrop { background: rgba(41, 35, 30, .34); }
+#settings-titlebar-backdrop { border-radius: 11px 11px 0 0; }
+window.revoice.maximized #settings-titlebar-backdrop { border-radius: 0; }
+#settings-dialog {
+  background: @surface; border: 1px solid @line; border-radius: 20px;
+  box-shadow: 0 10px 22px rgba(41, 35, 30, .25);
+}
+#settings-rail {
+  background: @well; border-right: 1px solid @line_soft;
+  border-radius: 19px 0 0 19px;
+}
+#settings-title { font-size: 17px; font-weight: 600; }
+#settings-close {
+  min-width: 30px; min-height: 30px; padding: 0;
+  background: transparent; border: 0; border-radius: 8px; box-shadow: none;
+}
+#settings-close:hover { background: @surface3; }
+#settings-group { color: @muted; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; }
+#account-card { background: @surface; border: 1px solid @line; }
+#account-card.active { border: 1px solid @accent; background: @well; }
+#account-title {
+  font-family: "Charter", "Bitstream Charter", "Noto Serif", serif;
+  font-size: 22px; font-weight: 500;
+}
+#account-status { color: @ink; font-size: 13px; font-weight: 600; }
+#account-card.active #account-status, #account-badge { color: @accent; }
+#account-badge { font-size: 12px; font-weight: 600; }
+#account-actions { margin-top: 2px; }
+#choice-chip {
+  background: @surface3; color: @ink; border: 1px solid @line; border-radius: 999px;
+  padding: 6px 12px; box-shadow: none; text-shadow: none; min-height: 18px;
+}
+#choice-chip label { color: @ink; font-weight: 500; }
+#choice-chip.active { background: @ink; border-color: @ink; }
+#choice-chip.active label { color: @surface; }
+#appearance-preview {
+  font-family: "Charter", "Bitstream Charter", "Noto Serif", serif;
+  font-size: 28px; font-weight: 500;
+}

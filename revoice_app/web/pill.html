@@ -1,41 +1,184 @@
 <body class="overlay">
-  <!-- The waveform branch of Reflow Overlay.tsx, hosted in Revoice's Wayland layer. -->
   <div class="hud hud-dark hud-standalone" data-interactive data-style="waveform"
-       data-shape="pill" data-phase="listen" role="status" id="pill" aria-label="Listening">
-    <div class="hud-capsule-row">
-      <span class="capsule-wave" data-active="true" aria-hidden="true"></span>
+       data-shape="pill" data-phase="listen" data-size="compact" data-live="false"
+       data-paper="false" data-waveform="ink" role="status" id="pill" aria-label="Listening">
+    <div class="pill-top">
+      <div class="pill-motion" aria-hidden="true">
+        <span class="motion motion-bars"></span>
+        <svg class="motion motion-ribbon" viewBox="0 0 120 24" preserveAspectRatio="xMidYMid meet">
+          <path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <svg class="motion motion-ink" viewBox="0 0 120 24" preserveAspectRatio="xMidYMid meet">
+          <path fill="currentColor"/>
+        </svg>
+        <span class="motion motion-dots"></span>
+      </div>
     </div>
+    <p class="pill-text" hidden></p>
     <button class="hud-control hud-stop" title="Cancel dictation" aria-label="Cancel dictation">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
     </button>
   </div>
 <script>
-const CAPSULE_BARS = [0.35, 0.65, 1, 0.8, 0.55, 0.35, 0.15];
+const WEIGHTS = [0.35, 0.65, 1, 0.8, 0.55, 0.35, 0.15];
 const pill = document.querySelector('#pill');
-const wave = document.querySelector('.capsule-wave');
+const bars = document.querySelector('.motion-bars');
+const dots = document.querySelector('.motion-dots');
+const ribbon = document.querySelector('.motion-ribbon path');
+const ink = document.querySelector('.motion-ink path');
+const transcript = document.querySelector('.pill-text');
 const cancel = document.querySelector('.hud-stop');
 const send = action => window.webkit.messageHandlers.revoice.postMessage(JSON.stringify({action}));
-const bars = CAPSULE_BARS.map((weight, index) => {
-  const bar = document.createElement('span');
-  bar.className = 'capsule-wave-bar';
-  bar.style.setProperty('--bar-weight', weight);
-  bar.style.animationDelay = `${index * -110}ms`;
-  wave.append(bar);
-  return bar;
-});
-window.renderState = ({listening, handsFree, level, reducedMotion}) => {
-  pill.dataset.phase = listening ? 'listen' : 'transcribe';
-  pill.setAttribute('aria-label', handsFree ? 'Hands-free recording' : listening ? 'Listening' : 'Finishing dictation');
-  wave.dataset.active = listening;
-  cancel.hidden = !listening;
-  document.documentElement.classList.toggle('reduce-motion', reducedMotion);
-  const amplitude = Number.isFinite(level) ? Math.max(0, Math.min(1, level * 4)) : 0;
-  bars.forEach((bar, index) => {
-    bar.style.height = `${3 + 17 * CAPSULE_BARS[index] * (listening ? amplitude : 1)}px`;
-  });
+const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
+const state = {
+  listening: true, handsFree: false, level: 0, reducedMotion: false,
+  waveform: 'ink', live: false, text: '', paper: false, pillSize: 'compact',
 };
+
+WEIGHTS.forEach((weight, index) => {
+  const bar = document.createElement('i');
+  bar.style.setProperty('--bar-weight', weight);
+  bar.dataset.index = index;
+  bars.append(bar);
+});
+for (let index = 0; index < 11; index += 1) {
+  const dot = document.createElement('i');
+  dot.dataset.index = index;
+  dots.append(dot);
+}
+
+function reduced() {
+  return state.reducedMotion
+    || document.documentElement.classList.contains('reduce-motion')
+    || matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function ribbonPath(amplitude, phase) {
+  const magnitude = 1.6 + 8 * amplitude;
+  let path = '';
+  for (let step = 0; step <= 32; step += 1) {
+    const x = (step / 32) * 120;
+    const y = 12 + Math.sin(phase + step * 0.42) * magnitude;
+    path += `${step ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)} `;
+  }
+  return path;
+}
+
+function inkPath(amplitude, phase) {
+  const points = [];
+  const steps = 28;
+  const travel = reduced() ? 0.55 : (phase / 7) % 1;
+  for (let step = 0; step <= steps; step += 1) {
+    const t = step / steps;
+    const taper = Math.sin(Math.PI * t) ** 0.45;
+    const swell = Math.exp(-(((t - travel) * 5.5) ** 2));
+    const body = 1.15 + amplitude * 1.35;
+    const half = body * (0.28 + 0.72 * taper) + swell * (0.7 + amplitude * 0.8);
+    points.push({
+      x: t * 120,
+      y: 12 + Math.sin(phase * 0.45 + t * 2.4) * (0.35 + amplitude * 1.1),
+      half,
+    });
+  }
+  let path = '';
+  points.forEach((point, index) => {
+    path += `${index ? 'L' : 'M'}${point.x.toFixed(2)} ${(point.y - point.half).toFixed(2)} `;
+  });
+  for (let index = points.length - 1; index >= 0; index -= 1) {
+    path += `L${points[index].x.toFixed(2)} ${(points[index].y + points[index].half).toFixed(2)} `;
+  }
+  return `${path}Z`;
+}
+
+let phase = 2.2;
+let shown = null;
+let frame = 0;
+
+function paint() {
+  const amplitude = state.listening
+    ? clamp((Number.isFinite(state.level) ? state.level : 0) * 4, 0, 1)
+    : 0.42;
+  if (state.waveform === 'bars') {
+    [...bars.children].forEach((bar, index) => {
+      const flutter = reduced() ? 1 : 0.84 + 0.16 * Math.sin(phase * 1.7 + index * 0.65);
+      bar.style.height = `${3 + 17 * WEIGHTS[index] * amplitude * flutter}px`;
+    });
+  } else if (state.waveform === 'ribbon') {
+    ribbon.setAttribute('d', ribbonPath(amplitude, reduced() ? 1.2 : phase));
+  } else if (state.waveform === 'dots') {
+    [...dots.children].forEach((dot, index) => {
+      const offset = Math.sin((reduced() ? 0.8 : phase) + index * 0.55) * (3 + 10 * amplitude);
+      dot.style.transform = `translateY(${offset.toFixed(2)}px)`;
+    });
+  } else {
+    ink.setAttribute('d', inkPath(amplitude, reduced() ? 2.4 : phase));
+  }
+}
+
+function stopLoop() {
+  if (frame) cancelAnimationFrame(frame);
+  frame = 0;
+}
+
+function startLoop() {
+  if (frame) return;
+  const tick = () => {
+    frame = requestAnimationFrame(tick);
+    if (!reduced()) phase += 0.055;
+    paint();
+  };
+  frame = requestAnimationFrame(tick);
+}
+
+function showText() {
+  if (!state.live) {
+    transcript.hidden = true;
+    return;
+  }
+  transcript.hidden = false;
+  const value = String(state.text || '').trim();
+  const next = value || (state.listening ? 'Listening…' : 'Finishing…');
+  if (next === shown) return;
+  shown = next;
+  transcript.textContent = next;
+  transcript.classList.toggle('is-placeholder', !value);
+  transcript.scrollTop = transcript.scrollHeight;
+}
+
+window.renderState = ({
+  listening = false, handsFree = false, level = 0, reducedMotion = false,
+  waveform = 'ink', live = false, text = '', paper = false, active = false,
+  accent = '#79501b', ink: inkColor = '#29231e', sheet = '#fffdf2', pillSize = 'compact',
+} = {}) => {
+  state.listening = !!listening;
+  state.active = active === undefined ? !!listening : !!active;
+  state.handsFree = !!handsFree;
+  state.level = Number.isFinite(level) ? level : 0;
+  state.reducedMotion = !!reducedMotion;
+  state.waveform = ['bars', 'ribbon', 'ink', 'dots'].includes(waveform) ? waveform : 'ink';
+  state.live = !!live;
+  state.text = typeof text === 'string' ? text : '';
+  state.paper = !!paper;
+  state.pillSize = ['compact', 'regular', 'large'].includes(pillSize) ? pillSize : 'compact';
+  pill.dataset.phase = state.listening ? 'listen' : 'transcribe';
+  pill.dataset.waveform = state.waveform;
+  pill.dataset.live = state.live ? 'true' : 'false';
+  pill.dataset.paper = state.paper ? 'true' : 'false';
+  pill.dataset.size = state.pillSize;
+  pill.style.setProperty('--pill-accent', accent || '#79501b');
+  pill.style.setProperty('--pill-ink', inkColor || '#29231e');
+  pill.style.setProperty('--pill-sheet', sheet || '#fffdf2');
+  pill.setAttribute('aria-label', state.handsFree ? 'Hands-free recording' : state.listening ? 'Listening' : 'Finishing dictation');
+  cancel.hidden = !state.listening;
+  document.documentElement.classList.toggle('reduce-motion', reduced());
+  showText();
+  paint();
+  if (state.active) startLoop();
+  else stopLoop();
+};
+paint();
 cancel.addEventListener('click', event => { event.stopPropagation(); send('cancel'); });
-pill.addEventListener('click', () => { if (wave.dataset.active === 'true') send('stop'); });
+pill.addEventListener('click', () => { if (state.listening) send('stop'); });
 </script>
 </body>

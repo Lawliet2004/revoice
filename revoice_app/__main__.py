@@ -25,7 +25,11 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, Gio, GLib, Gtk
 
-from .config import APP_ID, LOGIN_HOME, Store, api_key, codex_token, save_api_key
+from .appearance import stylesheet, web_appearance
+from .config import (
+    APP_ID, CLAUDE_LOGIN_HOME, LOGIN_HOME, Store, api_key, claude_available, claude_token, codex_token,
+    save_api_key, valid_text,
+)
 from .desktop import ClipboardError, KDE, WAYLAND, FocusService, KdeShortcut, Paste, PortalShortcut, copy_text, session_bus
 from .speech import Recording
 from .ui import Window
@@ -52,6 +56,9 @@ class App(Gtk.Application):
         self.generation = 0
         self.recording = None
         self.last_text = ""
+        self.live_text = ""
+        self.pill_text = ""
+        self.draft_timer = 0
         self.key = ""
         self.original = ("", "")
         self.dashboard_recording = False
@@ -61,23 +68,29 @@ class App(Gtk.Application):
 
     @property
     def ready(self):
+        provider = self.store.settings["provider"]
         try:
+            if provider == "claude":
+                return claude_available(self.store.settings["claude_auth"])
             return bool(self.credential())
         except ValueError:
             return False
 
     def credential(self):
-        if self.store.settings["provider"] == "codex":
+        provider = self.store.settings["provider"]
+        if provider == "codex":
             return codex_token(self.store.settings["codex_auth"])
+        if provider == "claude":
+            return claude_token(self.store.settings["claude_auth"])
         if not self.key:
             raise ValueError("Add an OpenAI API key in Settings.")
         return self.key
 
     def do_startup(self):
         Gtk.Application.do_startup(self)
-        theme = Gtk.CssProvider()
-        theme.load_from_path(str(Path(__file__).with_name("theme.css")))
-        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), theme,
+        self.css = Gtk.CssProvider()
+        self.css.load_from_data(stylesheet(self.store.settings).encode())
+        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), self.css,
                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         for name, callback in [
             ("show", lambda: self.show_window()),
@@ -123,6 +136,18 @@ class App(Gtk.Application):
         self.window.refresh_status()
         self.window.refresh_latest()
         self.update_pill()
+        GLib.timeout_add_seconds(3600, self.prune_history)
+
+    def prune_history(self):
+        try:
+            changed = self.store.prune()
+        except OSError:
+            return True
+        if changed and self.window:
+            if self.window.current == "history":
+                self.window.refresh_history()
+            self.window.refresh_latest()
+        return True
 
     def show_window(self, page=None):
         self.initialize()
@@ -260,47 +285,67 @@ class App(Gtk.Application):
         return ""
 
     def start_login(self):
-        codex = shutil.which("codex")
-        if not codex:
+        return self.launch_cli(
+            "codex", ["login"], f"CODEX_HOME={LOGIN_HOME}", LOGIN_HOME / "auth.json", codex_token, "codex_auth",
+            "Install the Codex CLI, then use Sign in with Codex.",
+            "Open a terminal, run codex login and connect the existing sign-in here.",
+            "Connected via Codex.",
+        )
+
+    def start_claude_login(self):
+        return self.launch_cli(
+            "claude", [], f"CLAUDE_CONFIG_DIR={CLAUDE_LOGIN_HOME}", CLAUDE_LOGIN_HOME / ".credentials.json",
+            claude_token, "claude_auth",
+            "Install the Claude Code CLI, then use Sign in with Claude.",
+            "Open a terminal, run claude, and sign in from /login.",
+            "Connected via Claude.",
+        )
+
+    def launch_cli(self, program, args, environment, watched, reader, setting, missing, no_terminal, success):
+        binary = shutil.which(program)
+        if not binary:
             for folder in (Path.home() / ".local/bin", Path.home() / ".npm-global/bin"):
-                candidate = folder / "codex"
+                candidate = folder / program
                 if candidate.is_file():
-                    codex = str(candidate)
+                    binary = str(candidate)
                     break
-        if not codex:
-            return "Install the Codex CLI, then use Sign in with Codex."
-        terminal = next((program for program in ("konsole", "kgx", "gnome-terminal", "x-terminal-emulator")
-                         if shutil.which(program)), None)
+        if not binary:
+            return missing
+        terminal = next((name for name in ("konsole", "kgx", "gnome-terminal", "x-terminal-emulator")
+                         if shutil.which(name)), None)
         if not terminal:
-            return "Open a terminal, run codex login and connect the existing sign-in here."
+            return no_terminal
         if self.login_process and self.login_process.poll() is None:
             return "Finish signing in from the open terminal or browser."
-        LOGIN_HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
+        watched.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         prefix = [terminal, "--"] if terminal in {"kgx", "gnome-terminal"} else [terminal, "-e"]
         if terminal == "konsole":
             prefix.insert(1, "--separate")
-        previous = LOGIN_HOME / "auth.json"
-        before = previous.stat().st_mtime_ns if previous.exists() else None
+        before = watched.stat().st_mtime_ns if watched.exists() else None
         try:
-            self.login_process = subprocess.Popen([*prefix, "env", f"CODEX_HOME={LOGIN_HOME}", codex, "login"],
-                                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.login_process = subprocess.Popen(
+                [*prefix, "env", environment, binary, *args],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
         except OSError:
-            return "Revoice couldn’t open the Codex login terminal."
+            return "Revoice couldn’t open the sign-in terminal."
         deadline = time.monotonic() + 300
 
         def refresh():
-            if previous.exists() and previous.stat().st_mtime_ns != before:
+            if watched.exists() and watched.stat().st_mtime_ns != before:
                 try:
-                    codex_token(str(previous))
+                    reader(str(watched))
                 except ValueError:
                     return time.monotonic() < deadline
-                self.store.set("codex_auth", str(previous))
+                self.store.set(setting, str(watched))
                 self.window.refresh_status()
-                self.window.feedback("Codex sign-in connected.")
+                self.window.feedback(success)
                 return False
             return time.monotonic() < deadline
 
         GLib.timeout_add_seconds(1, refresh)
+        if program == "claude":
+            return "Finish signing in with Claude in the terminal. If it asks, run /login. Revoice connects automatically."
         return "Finish signing in in the terminal or browser. Revoice updates automatically."
 
     def start(self, dashboard=False, provisional=False):
@@ -324,6 +369,9 @@ class App(Gtk.Application):
             self.recording = None
             self.complete("PipeWire couldn’t open the microphone.", error=True)
             return False
+        self.live_text = ""
+        self.pill_text = ""
+        self.clear_draft_timer()
         self.state = "recording"
         self.update_pill()
         self.window.feedback("Listening…")
@@ -356,6 +404,9 @@ class App(Gtk.Application):
             self.recording.cancel()
         self.recording = None
         self.clear_shortcut_gesture()
+        self.clear_draft_timer()
+        self.live_text = ""
+        self.pill_text = ""
         self.hands_free = False
         self.state = "idle"
         if self.pill:
@@ -371,7 +422,31 @@ class App(Gtk.Application):
             self.pill.energy = values[0]
             if self.dashboard_recording:
                 self.window.update_meter(values[0])
+        elif kind == "partial" and self.state == "recording":
+            text = values[0] if values else ""
+            if not isinstance(text, str) or not valid_text(text):
+                return False
+            self.live_text = text
+            self.pill_text = text
+            if getattr(self, "update_pill", None):
+                self.update_pill()
+            if getattr(self, "draft_timer", 0):
+                return False
+            self.window.refresh_home()
+
+            def flush(owner=self):
+                owner.draft_timer = 0
+                if getattr(owner, "state", "") == "recording" and getattr(owner, "window", None):
+                    owner.window.refresh_home()
+                return False
+
+            self.draft_timer = GLib.timeout_add(120, flush)
         elif kind == "error":
+            timer = getattr(self, "draft_timer", 0)
+            if timer:
+                GLib.source_remove(timer)
+            self.draft_timer = 0
+            self.live_text = ""
             self.recording.cancel()
             self.recording = None
             message = values[0]
@@ -380,11 +455,17 @@ class App(Gtk.Application):
                 message += " The partial transcript is available to copy."
             self.complete(message, error=True)
         elif kind == "result":
-            self.recording = None
+            timer = getattr(self, "draft_timer", 0)
+            if timer:
+                GLib.source_remove(timer)
+            self.draft_timer = 0
             text, duration = values
+            self.pill_text = text
+            self.live_text = ""
+            self.recording = None
             self.keep_transcript(text, duration)
             if self.dashboard_recording or not self.store.settings["auto_paste"]:
-                self.complete("Transcript ready")
+                self.complete("Transcript ready." + self.library_note())
             elif not self.paste:
                 self.paste_complete(generation, "Automatic paste unavailable. Transcript ready to copy.")
             else:
@@ -394,6 +475,12 @@ class App(Gtk.Application):
                                   lambda error: self.paste_complete(generation, error),
                                   lambda: generation == self.generation)
         return False
+
+    def clear_draft_timer(self):
+        timer = getattr(self, "draft_timer", 0)
+        if timer:
+            GLib.source_remove(timer)
+        self.draft_timer = 0
 
     def keep_transcript(self, text, duration):
         self.last_text = text
@@ -405,15 +492,22 @@ class App(Gtk.Application):
         if self.window.current == "history":
             self.window.refresh_history()
 
+    def library_note(self):
+        return " Saved in your library for 3 days." if self.store.settings["save_history"] else ""
+
     def paste_complete(self, generation, error):
         if generation == self.generation:
-            self.complete(error or "Paste sent", error=bool(error))
+            message = error or "Paste sent."
+            if self.store.settings["save_history"] and "library" not in message.casefold():
+                message += self.library_note()
+            self.complete(message, error=bool(error))
         return False
 
     def complete(self, message, error=False):
         self.state = "idle"
         self.clear_shortcut_gesture()
         self.hands_free = False
+        self.pill_text = ""
         self.update_pill()
         self.window.feedback(message, error)
         self.window.refresh_status()
@@ -428,7 +522,26 @@ class App(Gtk.Application):
             self.withdraw_notification("dictation-error")
 
     def update_pill(self):
-        self.pill.update("idle" if self.dashboard_recording else self.state, self.hands_free)
+        if self.pill is None:
+            return
+        state = "idle" if self.dashboard_recording else self.state
+        settings = self.store.settings
+        live = bool(settings.get("live_pill")) and state in ("recording", "processing")
+        tone = web_appearance(settings)
+        text = ""
+        if live:
+            text = self.live_text or self.pill_text
+        self.pill.update(
+            state, self.hands_free,
+            waveform=settings.get("waveform", "ink"),
+            pill_size=settings.get("pill_size", "compact"),
+            live=live,
+            text=text if isinstance(text, str) else "",
+            paper=settings.get("pill_surface") == "paper",
+            accent=tone["vars"]["--color-accent"],
+            ink=tone["vars"]["--color-ink"],
+            sheet=tone["vars"]["--color-sheet"],
+        )
 
     def copy(self, text):
         try:

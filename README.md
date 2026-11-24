@@ -6,7 +6,7 @@ Revoice turns speech into editable text. The Linux app supports hands-free dicta
 
 1. Download **revoice-windows-x64.zip** from [GitHub Releases](https://github.com/Lawliet2004/revoice/releases).
 2. Extract the entire ZIP on Windows and double-click **Revoice.cmd**. The download includes Python and the audio libraries.
-3. Choose **OpenAI API** and enter an API key, or choose **Codex sign-in** and select an existing Codex `auth.json`.
+3. Choose **OpenAI API** and enter an API key, **Codex**, or **Claude**. Codex uses an existing Codex `auth.json`. Claude uses the Claude Code sign-in on that computer.
 4. Press **Ctrl+Alt+F9** to start and stop recording, or use the **Record** button. Click **Copy transcript** when the text is ready and paste it into your destination app.
 
 Testing covered the launcher, shortcut, and synthetic audio under Wine. Physical Windows microphones and live provider sign-in still need verification. See the [Windows guide](windows/README.md) for microphone access, storage, and build instructions.
@@ -25,10 +25,13 @@ Automatic paste requires a verified target window. When the target changes or Re
 
 ## Speech providers
 
-- **Codex sign-in** streams audio to the undocumented ChatGPT dictation service used by Codex. For a modifier-only shortcut, Revoice buffers audio locally until KDE confirms the first release. OpenAI can change this connection or its account eligibility. If disconnected, refresh the profile through Codex or select another connection in Settings.
-- **OpenAI API** uses the documented `gpt-transcribe` model. Short dictations are sent after you stop. Long recordings are sent in segments as you dictate. It requires an API key and API usage billing or credits. On Linux, the key is stored in the desktop keyring using Secret Service. On Windows, the key stays in memory for the current session.
+- **Codex** streams audio to the ChatGPT dictation service used by Codex. Settings shows **Connected via Codex** while that sign-in is selected. For a modifier-only shortcut, Revoice buffers audio locally until KDE confirms the first release. OpenAI can change this connection or its account eligibility. If disconnected, refresh the profile through Codex or select another connection in Settings.
+- **Claude** streams audio to the speech service used by Claude Code’s `/voice`. Settings shows **Connected via Claude**. Revoice reads the Claude.ai sign-in in `~/.claude/.credentials.json` (or `%USERPROFILE%\.claude\.credentials.json` on Windows), honors `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_OAUTH_TOKEN`, and refreshes an expired access token back into that file. An Anthropic API key, Bedrock, or another cloud provider cannot be used for this connection. Anthropic can change the service or who may use it.
+- **OpenAI API** uses the documented `gpt-transcribe` model. Settings shows **Connected via OpenAI**. Short dictations are sent after you stop. Long recordings are sent in segments as you dictate. It requires an API key and API usage billing or credits. On Linux, the key is stored in the desktop keyring using Secret Service. On Windows, the key stays in memory for the current session.
 
-Both providers use the network. Hands-free dictation runs until you stop or cancel, subject to microphone and provider availability. Revoice splits long audio into provider-sized segments and combines the text for a single paste. If a later segment fails, completed text stays available to copy. Revoice keeps audio in memory during dictation. Transcript history can be disabled or cleared.
+All providers use the network. Hands-free dictation runs until you stop or cancel, subject to microphone and provider availability. Revoice splits long audio into provider-sized segments and combines the text for a single paste. If a later segment fails, completed text stays available to copy. Revoice keeps audio in memory during dictation and does not write the recording to disk. The Library keeps the text for three days, then removes it. Saving can be turned off, and the library can be cleared.
+
+The words appear in Revoice while you speak. In a browser, Revoice leaves the transcript on the clipboard a little longer so the page can finish inserting it.
 
 ## Linux (Debian and Ubuntu)
 

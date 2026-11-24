@@ -4,11 +4,11 @@ Download **revoice-windows-x64.zip** from [GitHub Releases](https://github.com/L
 
 ## Dictate
 
-1. Choose **OpenAI API** and enter your API key, or choose **Codex sign-in** and select an existing Codex `auth.json` from a ChatGPT sign-in. Both providers send audio over the network. OpenAI API transcription uses API billing.
+1. Choose **OpenAI API** and enter your API key, **Codex**, or **Claude**. Codex uses an existing Codex `auth.json` from a ChatGPT sign-in. Claude uses the Claude Code sign-in in your user profile. All three send audio over the network. OpenAI API transcription uses API billing. The window says **Connected via Codex**, **Connected via Claude**, or **Connected via OpenAI**.
 2. Click **Record**, or press **Ctrl+Alt+F9** from another application. Revoice uses the default Windows microphone. Press the shortcut again or click **Stop recording** to transcribe.
 3. Edit the result if needed, click **Copy transcript**, and paste it in your destination app.
 
-Revoice keeps its settings and optional history under `%LOCALAPPDATA%\Revoice`. It keeps the API key in memory for the current session. For Codex, it saves the selected profile path and reads the sign-in token when recording starts. Enable microphone access for desktop apps in Windows if capture fails. If the shortcut is already taken, use the dashboard controls.
+Revoice keeps its settings and text library under `%LOCALAPPDATA%\Revoice`. The library stores dictated text for three days and does not store microphone audio. It keeps the API key in memory for the current session. For Codex and Claude, it saves the selected profile path and reads the sign-in when recording starts. Claude refreshes an expired access token back into that credentials file. Enable microphone access for desktop apps in Windows if capture fails. If the shortcut is already taken, use the dashboard controls.
 
 The Windows build uses tap-to-start and tap-to-stop. The dashboard displays recording state. The launcher and global shortcut passed under Wine with synthetic audio. Physical microphone capture on Windows and live provider sign-in still need verification.
 

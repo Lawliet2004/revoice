@@ -3,12 +3,19 @@
 import re
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from gi.repository import Gdk, Gtk, Pango
 
-from .config import candidate_logins, codex_token
+from .appearance import (
+    ACCOUNTS, account_view, accent_rgb, icon_rgb, listening, stylesheet, surface_rgb, web_appearance,
+)
+from .config import (
+    HISTORY_DAYS, candidate_claude_logins, candidate_logins, claude_available, claude_token, codex_token,
+    connection_label, kept_until,
+)
 from .desktop import KDE, MODIFIERS, NAMED_KEYS, sources
-from .visuals import Icon
+from .visuals import Icon, Swatch
 from .webview import LocalView
 
 INK = (.29, .25, .22)
@@ -46,7 +53,9 @@ def button(text, action, style="secondary", glyph=None):
     widget.get_style_context().add_class(style)
     row = box(False, 7)
     if glyph:
-        row.pack_start(Icon(glyph, 16, PAPER if style == "action" else INK), False, False, 0)
+        icon = Icon(glyph, 16, PAPER if style == "action" else INK)
+        icon.follows_ink = style != "action"
+        row.pack_start(icon, False, False, 0)
     row.pack_start(label(text), False, False, 0)
     widget.add(row)
     widget.connect("clicked", action)
@@ -118,18 +127,20 @@ class Window(Gtk.ApplicationWindow):
         self.sidebar_collapsed = False
         self.sidebar_labels = []
         self.make_titlebar()
-        shell = box(False, name="revoice-shell")
-        self.add(shell)
+        self.dashboard = Gtk.Overlay()
+        self.add(self.dashboard)
+        self.shell = box(False, name="revoice-shell")
+        self.dashboard.add(self.shell)
         self.sidebar = box(name="navigation")
         self.sidebar.set_size_request(220, -1)
-        shell.pack_start(self.sidebar, False, False, 0)
+        self.shell.pack_start(self.sidebar, False, False, 0)
         self.pages = Gtk.Stack()
         self.pages.set_name("canvas")
         self.pages.set_margin_end(8)
         self.pages.set_margin_bottom(8)
         self.pages.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         self.pages.set_transition_duration(145)
-        shell.pack_start(self.pages, True, True, 0)
+        self.shell.pack_start(self.pages, True, True, 0)
         self.nav = {}
         self.make_sidebar()
         self.make_overview()
@@ -144,21 +155,28 @@ class Window(Gtk.ApplicationWindow):
         titlebar.set_show_close_button(False)
         titlebar.set_has_subtitle(False)
         titlebar.set_custom_title(Gtk.Box())
-        toggle = self.titlebar_button("sidebar", "Collapse sidebar", self.toggle_sidebar)
+        toggle = self.icon_button("sidebar", "Collapse sidebar", self.toggle_sidebar)
         self.sidebar_toggle = toggle
         titlebar.pack_start(toggle)
         controls = box(False)
-        controls.pack_start(self.titlebar_button("minimize", "Minimize", self.iconify), False, False, 0)
-        maximize = self.titlebar_button("maximize", "Maximize", self.toggle_maximize)
+        controls.pack_start(self.icon_button("minimize", "Minimize", self.iconify), False, False, 0)
+        maximize = self.icon_button("maximize", "Maximize", self.toggle_maximize)
         controls.pack_start(maximize, False, False, 0)
-        close = self.titlebar_button("close", "Close window", self.close)
+        close = self.icon_button("close", "Close window", self.close)
         close.get_style_context().add_class("titlebar-close")
         controls.pack_start(close, False, False, 0)
         titlebar.pack_end(controls)
         self.connect("notify::is-maximized", self.update_maximize, maximize)
-        self.set_titlebar(titlebar)
+        self.titlebar = titlebar
+        titlebar_layer = Gtk.Overlay()
+        titlebar_layer.add(titlebar)
+        self.titlebar_backdrop = self.settings_backdrop()
+        self.titlebar_backdrop.set_name("settings-titlebar-backdrop")
+        self.titlebar_backdrop.set_no_show_all(True)
+        titlebar_layer.add_overlay(self.titlebar_backdrop)
+        self.set_titlebar(titlebar_layer)
 
-    def titlebar_button(self, glyph, name, callback):
+    def icon_button(self, glyph, name, callback):
         control = Gtk.Button()
         control.set_relief(Gtk.ReliefStyle.NONE)
         control.add(Icon(glyph, 16, INK))
@@ -209,7 +227,7 @@ class Window(Gtk.ApplicationWindow):
             control = Gtk.Button()
             control.set_name("nav-button")
             content = box(False, 11)
-            content.pack_start(Icon(glyph, 18, INK), False, False, 0)
+            content.pack_start(Icon(glyph, 20 if key == "settings" else 18, INK), False, False, 0)
             item = label(title)
             self.sidebar_labels.append(item)
             content.pack_start(item, False, False, 0)
@@ -227,8 +245,8 @@ class Window(Gtk.ApplicationWindow):
         status.pack_start(pad(Icon("wave", 18, INK), 10, 0, 0, 3), False, False, 0)
         detail = pad(box(spacing=1), 10, 0, 0, 0)
         self.sidebar_labels.append(detail)
-        self.side_provider = label("Codex dictation", "footer-title")
-        self.side_status = label("Set up in Settings", "footer-desc")
+        self.side_provider = label("Codex", "footer-title")
+        self.side_status = label("Sign in to Codex", "footer-desc")
         detail.pack_start(self.side_provider, False, False, 0)
         detail.pack_start(self.side_status, False, False, 0)
         status.pack_start(detail, True, True, 0)
@@ -247,7 +265,7 @@ class Window(Gtk.ApplicationWindow):
         return content
 
     def make_overview(self):
-        self.home = LocalView("home", self.home_action)
+        self.home = LocalView("home", self.home_action, appearance=web_appearance(self.store.settings))
         self.home.connect("map", lambda _: self.animate_home())
         self.pages.add_named(self.home, "overview")
 
@@ -274,19 +292,27 @@ class Window(Gtk.ApplicationWindow):
         elif action == "language" and isinstance(value, str):
             self.language_combo.set_active_id(value)
 
+    def visible_transcript(self):
+        if self.app.state == "recording" or (self.app.state == "processing" and self.app.live_text):
+            return self.app.live_text
+        return self.app.last_text or (self.store.history[0].get("text", "") if self.store.history else "")
+
     def refresh_home(self):
-        text = self.app.last_text or (self.store.history[0].get("text", "") if self.store.history else "")
+        provider = self.store.settings["provider"]
         ready = self.app.ready
+        names = {"codex": "Codex", "claude": "Claude", "openai": "OpenAI"}
         self.home.render({
             "state": self.app.state,
             "ready": ready,
-            "provider": "Codex" if self.store.settings["provider"] == "codex" else "OpenAI",
+            "provider": names.get(provider, "Codex"),
+            "connection": connection_label(provider, ready),
             "keys": self.app.shortcut_label.split("+") if self.app.shortcut_label else [],
             "hold": self.app.shortcut_can_hold and self.store.settings["hold"],
-            "description": self.shortcut_description if ready else "Connect a speech provider to start dictating.",
+            "description": self.shortcut_description if ready else "Sign in with Codex or Claude from Settings.",
+            "appearance": web_appearance(self.store.settings),
             "language": self.store.settings["language"],
             "languages": self.desktop_languages,
-            "text": text,
+            "text": self.visible_transcript(),
             "recent": [[entry.get("text", ""), small_time(entry.get("at"))] for entry in self.store.history[:3]],
             "feedback": self.feedback_message,
             "error": self.feedback_error,
@@ -295,8 +321,11 @@ class Window(Gtk.ApplicationWindow):
     def make_history(self):
         page = self.page("history")
         mast = box(False, 12)
-        mast.pack_start(header("History", "Search and copy recent transcripts from this computer."), True, True, 0)
-        clear = button("Clear history", lambda _: self.confirm_clear(), "minimal")
+        mast.pack_start(header(
+            "Library",
+            "Dictated text stays on this computer for 3 days, then it is removed. Recordings are not saved.",
+        ), True, True, 0)
+        clear = button("Clear library", lambda _: self.confirm_clear(), "minimal")
         clear.set_valign(Gtk.Align.START)
         mast.pack_start(clear, False, False, 0)
         page.pack_start(mast, False, False, 0)
@@ -304,83 +333,162 @@ class Window(Gtk.ApplicationWindow):
         self.search.set_placeholder_text("Search transcripts")
         self.search.connect("search-changed", lambda _: self.refresh_history())
         page.pack_start(self.search, False, False, 0)
+        self.library_count = label("", "subtle")
+        page.pack_start(self.library_count, False, False, 0)
         self.history_list = group()
         page.pack_start(self.history_list, False, False, 0)
 
     def make_settings(self):
-        self.settings_window = Gtk.Window(title="Settings", transient_for=self, modal=True, destroy_with_parent=True)
-        self.settings_window.set_decorated(False)
-        self.settings_window.set_default_size(1000, 652)
-        self.settings_window.set_name("settings-dialog")
-        self.settings_window.connect("delete-event", lambda *_: self.settings_window.hide_on_delete())
-        self.settings_window.connect("key-press-event", self.on_settings_key)
+        self.settings_layer = Gtk.Overlay()
+        self.dashboard.add_overlay(self.settings_layer)
+        self.settings_layer.add(self.settings_backdrop())
+
+        panel = pad(Gtk.EventBox(), 24, 28, 28, 28)
+        panel.set_name("settings-dialog")
+        self.settings_layer.add_overlay(panel)
         shell = box(False)
+        panel.add(shell)
         rail = box(name="settings-rail")
         rail.set_size_request(220, -1)
-        rail.pack_start(pad(label("Settings", "panel-title-large"), 24, 16, 18, 22), False, False, 0)
-        self.settings_window.add(shell)
+        rail.pack_start(pad(label("Settings", "settings-title"), 25, 16, 18, 20), False, False, 0)
         shell.pack_start(rail, False, False, 0)
+        pane = Gtk.Overlay()
+        shell.pack_start(pane, True, True, 0)
         right = box()
-        close = button("×", lambda _: self.settings_window.hide(), "minimal")
-        close.get_accessible().set_name("Close settings")
-        close.set_halign(Gtk.Align.END)
-        right.pack_start(pad(close, 7, 10, 0, 0), False, False, 0)
+        pane.add(right)
+        self.settings_close = self.icon_button("close", "Close settings", self.close_settings)
+        self.settings_close.set_name("settings-close")
+        self.settings_close.set_halign(Gtk.Align.END)
+        self.settings_close.set_valign(Gtk.Align.START)
+        pane.add_overlay(pad(self.settings_close, 10, 10, 0, 0))
         self.settings_pages = Gtk.Stack()
         right.pack_start(self.settings_pages, True, True, 0)
-        shell.pack_start(right, True, True, 0)
         self.settings_nav = {}
-        for key, title, glyph in (
-            ("general", "General", "keys"), ("speech", "Speech", "mic"), ("history", "History", "history"),
-        ):
-            item = button(title, lambda _, selected=key: self.navigate_settings(selected), "minimal", glyph)
-            item.set_name("nav-button")
-            rail.pack_start(pad(item, 0, 10, 3, 10), False, False, 0)
-            self.settings_nav[key] = item
+        groups = (
+            ("Dictation", (
+                ("speech", "Speech", "mic"),
+                ("claude", "Claude sign-in", "keys"),
+            )),
+            ("App", (
+                ("general", "General", "settings"),
+                ("appearance", "Appearance", "look"),
+                ("history", "Library", "history"),
+            )),
+        )
+        for caption, items in groups:
+            rail.pack_start(pad(label(caption, "settings-group"), 14, 18, 2, 20), False, False, 0)
+            for key, title, glyph in items:
+                item = button(title, lambda _, selected=key: self.navigate_settings(selected), "minimal", glyph)
+                item.set_name("nav-button")
+                rail.pack_start(pad(item, 0, 10, 3, 10), False, False, 0)
+                self.settings_nav[key] = item
 
-        page = self.settings_page("speech", "Speech", "Choose a transcription provider, language, and microphone.")
-        provider = group()
-        self.provider_combo = self.combo([("codex", "Codex sign-in"), ("openai", "OpenAI API")], "provider",
-                                         self.change_provider)
-        row(provider, "Speech provider", "Audio goes to your selected provider while you dictate.", self.provider_combo, "wave")
-        connection = box(False, 5)
-        self.secret_button = button("Connect", lambda _: self.connection_dialog())
-        self.secret_button.set_size_request(114, -1)
-        connection.pack_start(self.secret_button, False, False, 0)
-        self.provider_desc = row(provider, "Connection", "", connection)
+        page = self.settings_page(
+            "speech", "Speech",
+            "Claude sign-in is the first row. Codex and OpenAI are below. The marked card is the one dictation uses.",
+        )
+        self.accounts = {}
+        claude_gate = group()
+        row(
+            claude_gate,
+            "Claude sign-in",
+            ACCOUNTS["claude"]["absent"],
+            button("Sign in with Claude", lambda _button: self.sign_in_provider("claude"), "action"),
+            "keys",
+        )
+        page.pack_start(claude_gate, False, False, 0)
+        cards = box(spacing=12)
+        for provider in ("codex", "openai"):
+            cards.pack_start(self.account_card(provider), False, False, 0)
+        page.pack_start(cards, False, False, 0)
+        listening = group()
         self.desktop_languages = [("", "Auto-detect"), ("en", "English"), ("bn", "Bengali"), ("hi", "Hindi"),
                              ("fr", "French"), ("de", "German"), ("es", "Spanish"), ("ta", "Tamil"),
                              ("te", "Telugu"), ("ja", "Japanese"), ("ko", "Korean"), ("zh", "Chinese"),
                              ("ar", "Arabic"), ("pt", "Portuguese"), ("it", "Italian"), ("ur", "Urdu")]
         self.language_combo = self.combo(self.desktop_languages, "language", self.refresh_home)
-        row(provider, "Spoken language", "Set a language hint or let the provider detect it.", self.language_combo)
+        row(listening, "Spoken language", "Set a language hint or let the provider detect it.", self.language_combo)
         self.source_combo = self.combo([("", "System default"), *sources()], "device")
-        row(provider, "Microphone", "Use the default PipeWire input or select a device.", self.source_combo)
-        page.pack_start(provider, False, False, 0)
+        row(listening, "Microphone", "Use the default PipeWire input or select a device.", self.source_combo, "mic")
+        page.pack_start(listening, False, False, 0)
+
+        page = self.settings_page(
+            "claude", "Claude sign-in",
+            "Sign in with Claude Code. Revoice uses that Claude.ai account, not an API key.",
+        )
+        page.pack_start(self.account_card("claude"), False, False, 0)
 
         page = self.settings_page("general", "General", "Choose how to start dictation and where text goes.")
         shortcut = group()
         self.settings_shortcut = row(shortcut, "Global shortcut", "", button("Change shortcut", lambda _: self.shortcut_dialog()), "keys")
         row(shortcut, "Hold and double-press", "Turn off to use one tap to start and another to stop.",
             self.switch("hold", self.refresh_shortcut))
-        row(shortcut, "Paste into the focused app", "Revoice sends a paste keystroke and restores your previous clipboard.",
+        row(shortcut, "Paste into the focused app",
+            "Revoice pastes into the field you were typing in and restores your previous clipboard. Live words are turned on under Appearance.",
             self.switch("auto_paste", lambda: self.refresh_status()))
         row(shortcut, "Paste key", "Automatic uses Ctrl+Shift+V in known terminals.",
             self.combo([("auto", "Automatic"), ("regular", "Ctrl+V"), ("terminal", "Ctrl+Shift+V")], "paste_key"))
         page.pack_start(shortcut, False, False, 0)
 
-        page = self.settings_page("history", "History", "Manage transcripts saved on this computer.")
+        page = self.settings_page("history", "Library", "Text from dictation is kept on this computer, then removed.")
         data = group()
-        row(data, "Keep transcript history", "Saves up to 150 transcripts locally. Revoice does not save microphone audio.",
+        row(data, "Keep a text library",
+            f"Saves the words, not the recording, for {HISTORY_DAYS} days. Up to 150 texts.",
             self.switch("save_history"))
         page.pack_start(data, False, False, 0)
+
+        page = self.settings_page(
+            "appearance", "Appearance",
+            "Warm paper is the manuscript desk. These choices change the desk, the ink, the listening pill, and the size of the words.",
+        )
+        self.appearance_chips = {}
+        desk = group()
+        self.choice_row(desk, "Paper", "Warm is the original desk. Neutral is quieter. Cool is stone.",
+                        "tone", (("warm", "Warm"), ("neutral", "Neutral"), ("cool", "Cool")))
+        self.choice_row(desk, "Ink", "The record button, links, and the listening caret use this colour.",
+                        "accent",
+                        (("copper", "Copper"), ("ink", "Ink"), ("sea", "Sea"), ("forest", "Forest"), ("plum", "Plum")),
+                        swatches=True)
+        self.choice_row(desk, "Text size", "Home and Settings grow together.",
+                        "text_size", (("compact", "Compact"), ("regular", "Regular"), ("large", "Large")))
+        self.choice_row(desk, "Density", "How much air the home sheet keeps around the words.",
+                        "density", (("compact", "Tight"), ("regular", "Regular"), ("roomy", "Roomy")))
+        self.choice_row(desk, "Corners", "How round the sheets and buttons are.",
+                        "corners", (("sharp", "Sharp"), ("soft", "Soft"), ("round", "Round")))
+        self.choice_row(desk, "Reading face", "The face used for dictated words.",
+                        "reading_face", (("book", "Book"), ("sans", "Sans"), ("mono", "Mono")))
+        page.pack_start(self.named_group("Desk", desk), False, False, 0)
+        listening_pill = group()
+        self.choice_row(listening_pill, "Motion", "Ink is a quill line. Bars is the original equalizer.",
+                        "waveform", (("bars", "Bars"), ("ribbon", "Ribbon"), ("ink", "Ink"), ("dots", "Dots")))
+        self.choice_row(listening_pill, "Pill size", "The waveform pill. Live words use the wide sheet instead.",
+                        "pill_size", (("compact", "Compact"), ("regular", "Regular"), ("large", "Large")))
+        self.choice_row(listening_pill, "Surface", "Charcoal sits on any desk. Paper matches the sheet.",
+                        "pill_surface", (("charcoal", "Charcoal"), ("paper", "Paper")))
+        row(listening_pill, "Live words",
+            "The pill grows and shows the words while you speak. When you stop, they paste into the text field you were typing in.",
+            self.switch("live_pill", self.sync_listening_pill))
+        page.pack_start(self.named_group("Listening pill", listening_pill), False, False, 0)
+        preview = box(name="settings-panel")
+        preview.pack_start(pad(label("Speak freely.", "appearance-preview"), 18, 18, 2, 18), False, False, 0)
+        self.appearance_note = label(self.pill_caption(), "muted", True)
+        preview.pack_start(pad(self.appearance_note, 0, 18, 8, 18), False, False, 0)
+        preview.pack_start(pad(label("Connected via Codex", "status-attention"), 0, 18, 18, 18), False, False, 0)
+        page.pack_start(preview, False, False, 0)
+
         self.settings_feedback = label("", "status-attention", True)
         right.pack_end(pad(self.settings_feedback, 0, 24, 16, 24), False, False, 0)
-        self.navigate_settings("general")
+        self.settings_layer.show_all()
+        self.settings_layer.hide()
+        self.settings_layer.set_no_show_all(True)
+        self.navigate_settings("speech")
+        self.apply_appearance()
+        self.refresh_accounts()
 
     def settings_page(self, key, title, description):
         scroller = Gtk.ScrolledWindow()
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        page = pad(box(spacing=20), 2, 38, 32, 38)
+        page = pad(box(spacing=24), 28, 32, 24, 32)
         page.pack_start(header(title, description), False, False, 0)
         scroller.add(page)
         self.settings_pages.add_named(scroller, key)
@@ -395,16 +503,23 @@ class Window(Gtk.ApplicationWindow):
             else:
                 style.remove_class("active")
 
-    def on_settings_key(self, _window, event):
-        if event.keyval == Gdk.KEY_Escape:
-            self.settings_window.hide()
-            return True
-        return False
+    def settings_backdrop(self):
+        backdrop = Gtk.EventBox()
+        backdrop.get_style_context().add_class("settings-backdrop")
+        backdrop.connect("button-press-event", self.dismiss_settings)
+        return backdrop
 
-    def change_provider(self):
-        if self.store.settings["provider"] == "openai":
-            self.app.load_key()
-        self.refresh_status()
+    def dismiss_settings(self, _backdrop, _event):
+        self.close_settings()
+        return True
+
+    def close_settings(self):
+        if self.settings_layer.get_visible():
+            self.settings_layer.hide()
+            self.titlebar_backdrop.hide()
+            self.shell.set_sensitive(True)
+            self.titlebar.set_sensitive(True)
+            self.nav["settings"].grab_focus()
 
     def combo(self, choices, key, after=None):
         control = Gtk.ComboBoxText()
@@ -436,17 +551,15 @@ class Window(Gtk.ApplicationWindow):
 
     def record_action(self, _button):
         if self.app.state == "idle" and not self.app.ready:
-            self.connection_dialog()
+            self.open_settings("speech")
         else:
             self.app.toggle(dashboard=True)
 
     def navigate(self, page):
         if page == "settings":
-            self.refresh_status()
-            self.settings_window.show_all()
-            self.settings_window.present()
+            self.open_settings("speech")
             return
-        self.settings_window.hide()
+        self.close_settings()
         self.current = page
         self.pages.set_visible_child_name(page)
         for key, control in self.nav.items():
@@ -458,15 +571,23 @@ class Window(Gtk.ApplicationWindow):
         if page == "history":
             self.refresh_history()
 
+    def open_settings(self, page):
+        self.refresh_status()
+        self.navigate_settings(page)
+        self.settings_layer.show()
+        self.titlebar_backdrop.show()
+        self.shell.set_sensitive(False)
+        self.titlebar.set_sensitive(False)
+        self.settings_close.grab_focus()
+
     def refresh_status(self):
         provider = self.store.settings["provider"]
-        self.side_provider.set_text("Codex dictation" if provider == "codex" else "OpenAI API")
-        self.side_status.set_text("Connected" if self.app.ready else "Set up in Settings")
-        if provider == "codex":
-            self.provider_desc.set_text("Uses your local Codex ChatGPT login through an unofficial connection.")
-        else:
-            self.provider_desc.set_text("Uses GPT-Transcribe and separate API billing. The key is stored in your keyring.")
-        simple_set_text(self.secret_button, "Manage" if self.app.ready else "Connect")
+        ready = self.app.ready
+        names = {"codex": "Codex", "claude": "Claude", "openai": "OpenAI API"}
+        self.side_provider.set_text(names.get(provider, "Codex"))
+        self.side_status.set_text(connection_label(provider, ready))
+        if getattr(self, "accounts", None):
+            self.refresh_accounts()
         self.refresh_shortcut()
 
     def refresh_shortcut(self):
@@ -486,14 +607,23 @@ class Window(Gtk.ApplicationWindow):
             child.destroy()
         query = self.search.get_text().strip().casefold()
         records = [entry for entry in self.store.history if query in entry.get("text", "").casefold()]
+        count = len(self.store.history)
+        noun = "text" if count == 1 else "texts"
+        self.library_count.set_text(
+            "Nothing is saved yet." if not count else f"{count} {noun} on this computer. Audio is not saved.",
+        )
         if not records:
-            details = "No transcripts match that search." if query else "Your first saved dictation will appear here."
+            details = "No texts match that search." if query else "Your first dictated text will appear here."
             self.history_list.pack_start(pad(label(details, "muted"), 23, 18, 23, 18), False, False, 0)
         for entry in records:
             outer = pad(box(False, 12, "transcript-row"), 10, 15, 10, 15)
             body = box(spacing=5)
             total = round(entry.get("duration", 0))
-            body.pack_start(label(f"{small_time(entry.get('at'))}  ·  {total // 60}:{total % 60:02d}", "subtle"), False, False, 0)
+            removal = kept_until(entry.get("at"))
+            meta = f"{small_time(entry.get('at'))}  ·  {total // 60}:{total % 60:02d}"
+            if removal:
+                meta += f"  ·  {removal}"
+            body.pack_start(label(meta, "subtle"), False, False, 0)
             message = label(entry["text"], "manuscript-text", wrap=True)
             message.set_selectable(True)
             message.set_max_width_chars(75)
@@ -520,8 +650,7 @@ class Window(Gtk.ApplicationWindow):
         self.refresh_home()
 
     def dialog(self, title, desc):
-        parent = self.settings_window if self.settings_window.get_visible() else self
-        dialog = Gtk.Dialog(title=title, transient_for=parent, modal=True, destroy_with_parent=True)
+        dialog = Gtk.Dialog(title=title, transient_for=self, modal=True, destroy_with_parent=True)
         dialog.set_name("revoice-dialog")
         dialog.set_default_size(480, -1)
         dialog.add_button("Close", Gtk.ResponseType.CLOSE).get_style_context().add_class("secondary")
@@ -531,55 +660,241 @@ class Window(Gtk.ApplicationWindow):
         dialog.get_content_area().pack_start(body, True, True, 0)
         return dialog, body
 
-    def connection_dialog(self):
-        if self.store.settings["provider"] == "openai":
-            return self.api_dialog()
-        dialog, body = self.dialog(
-            "Connect Codex",
-            "Revoice uses a Codex ChatGPT sign-in for dictation. "
-            "This connection is unofficial and can change.",
+    def account_card(self, provider):
+        copy = ACCOUNTS[provider]
+        card = box(name="account-card")
+        head = pad(box(False, 12), 16, 16, 2, 16)
+        titles = box(spacing=3)
+        titles.pack_start(label(copy["title"], "account-title"), False, False, 0)
+        status = label(copy["missing"], "account-status")
+        path = label("", "subtle")
+        titles.pack_start(status, False, False, 0)
+        titles.pack_start(path, False, False, 0)
+        head.pack_start(titles, True, True, 0)
+        badge = label("Used for dictation", "account-badge")
+        badge.set_valign(Gtk.Align.START)
+        head.pack_end(badge, False, False, 0)
+        card.pack_start(head, False, False, 0)
+        detail = label(copy["absent"], "subtle", True)
+        card.pack_start(pad(detail, 2, 16, 0, 16), False, False, 0)
+        sign = button(copy["sign"], lambda _button, selected=provider: self.sign_in_provider(selected), "action")
+        existing = button("Use existing sign-in", lambda _button, selected=provider: self.use_existing(selected), "secondary")
+        use = button("Use for dictation", lambda _button, selected=provider: self.use_provider(selected), "secondary")
+        choose = button("Choose profile…", lambda _button, selected=provider: self.choose_login(selected), "secondary")
+        disconnect = button(
+            "Remove key" if provider == "openai" else "Disconnect",
+            lambda _button, selected=provider: self.disconnect_provider(selected), "minimal",
         )
-        status = label("", "status-attention", True)
-        def use(path):
-            try:
-                codex_token(str(path))
-            except ValueError as error:
-                status.set_text(str(error))
-                return
-            self.store.set("codex_auth", str(path))
-            self.refresh_status()
-            self.feedback("Codex sign-in connected.")
-            dialog.response(Gtk.ResponseType.OK)
+        actions = box(False, 8)
+        for control in (sign, existing, use, choose, disconnect):
+            control.set_halign(Gtk.Align.CENTER)
+            actions.pack_start(control, False, False, 0)
+        card.pack_start(pad(actions, 12, 16, 16, 16), False, False, 0)
+        self.accounts[provider] = SimpleNamespace(
+            card=card, status=status, detail=detail, path=path, badge=badge,
+            existing=existing, choose=choose, disconnect=disconnect, use=use, sign=sign,
+        )
+        return card
 
-        def choose(_control):
-            picker = Gtk.FileChooserDialog(title="Choose Codex auth.json", transient_for=dialog,
-                                           action=Gtk.FileChooserAction.OPEN)
-            picker.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Use sign-in", Gtk.ResponseType.OK)
-            picker.set_show_hidden(True)
-            picker.set_current_folder(str(Path.home()))
-            if picker.run() == Gtk.ResponseType.OK:
-                path = picker.get_filename()
-                picker.destroy()
-                use(path)
+    def choice_row(self, parent, title, description, key, choices, swatches=False):
+        wrap = box(False, 6)
+        chips = {}
+        for value, name in choices:
+            chip = Gtk.Button()
+            chip.set_name("choice-chip")
+            content = box(False, 6)
+            if swatches:
+                dot = Swatch(accent_rgb(value))
+                dot.set_valign(Gtk.Align.CENTER)
+                content.pack_start(dot, False, False, 0)
+            content.pack_start(label(name), False, False, 0)
+            chip.add(content)
+            chip.connect("clicked", lambda _button, selected=value, setting=key: self.choose_appearance(setting, selected))
+            chips[value] = chip
+            wrap.pack_start(chip, False, False, 0)
+        self.appearance_chips[key] = chips
+        row(parent, title, description, wrap)
+
+    def choose_appearance(self, key, value):
+        if self.store.settings.get(key) == value:
+            self.mark_chips()
+            return
+        self.store.set(key, value)
+        self.apply_appearance()
+
+    def mark_chips(self):
+        for key, chips in getattr(self, "appearance_chips", {}).items():
+            current = self.store.settings[key]
+            for value, chip in chips.items():
+                style = chip.get_style_context()
+                if value == current:
+                    style.add_class("active")
+                else:
+                    style.remove_class("active")
+
+    def apply_appearance(self):
+        provider = getattr(self.app, "css", None)
+        if provider is None:
+            provider = Gtk.CssProvider()
+            self.app.css = provider
+            Gtk.StyleContext.add_provider_for_screen(
+                Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+            )
+        provider.load_from_data(stylesheet(self.store.settings).encode())
+        ink = icon_rgb(self.store.settings)
+        for widget in (*self.walk(self), *self.walk(self.get_titlebar())):
+            if isinstance(widget, Icon) and widget.follows_ink:
+                widget.color = ink
+                widget.queue_draw()
+        if getattr(self, "home", None):
+            red, green, blue = surface_rgb(self.store.settings)
+            self.home.set_paper(red, green, blue)
+            self.refresh_home()
+        self.mark_chips()
+        note = getattr(self, "appearance_note", None)
+        if note is not None:
+            note.set_text(self.pill_caption())
+        if getattr(self.app, "pill", None) is not None:
+            self.app.update_pill()
+
+    def named_group(self, title, body):
+        block = box(spacing=8)
+        block.pack_start(label(title, "settings-group"), False, False, 0)
+        block.pack_start(body, False, False, 0)
+        return block
+
+    def pill_caption(self):
+        waveform, _size, surface = listening(self.store.settings)
+        motion = {"bars": "Bars", "ribbon": "Ribbon", "ink": "Ink line", "dots": "Dots"}
+        pill = {"charcoal": "a charcoal pill", "paper": "a paper pill"}
+        return f"{motion[waveform]} on {pill[surface]}. Finished words paste into the field you were typing in."
+
+    def sync_listening_pill(self):
+        if hasattr(self.app, "update_pill") and getattr(self.app, "pill", None) is not None:
+            self.app.update_pill()
+
+    def walk(self, widget):
+        if widget is None:
+            return
+        yield widget
+        if isinstance(widget, Gtk.Container):
+            for child in widget.get_children():
+                yield from self.walk(child)
+
+    def saved_login(self, provider):
+        if provider == "claude":
+            return self.store.settings["claude_auth"]
+        if provider == "codex":
+            return self.store.settings["codex_auth"]
+        return ""
+
+    def login_file(self, provider):
+        if provider == "openai":
+            return None
+        candidates = candidate_claude_logins() if provider == "claude" else candidate_logins()
+        return next((path for path in candidates if path.is_file()), None)
+
+    def provider_ready(self, provider):
+        if provider == "openai":
+            return bool(getattr(self.app, "key", ""))
+        if provider == "claude":
+            return claude_available(self.store.settings["claude_auth"])
+        try:
+            codex_token(self.store.settings["codex_auth"])
+        except ValueError:
+            return False
+        return True
+
+    def refresh_accounts(self):
+        active = self.store.settings["provider"]
+        for provider, widgets in self.accounts.items():
+            ready = self.provider_ready(provider)
+            saved = self.saved_login(provider)
+            found = self.login_file(provider)
+            view = account_view(provider, ready, provider == active, saved, found)
+            widgets.status.set_text(view["status"])
+            widgets.detail.set_text(view["detail"])
+            widgets.path.set_text(view["path"])
+            widgets.path.set_visible(bool(view["path"]))
+            widgets.badge.set_visible(view["active"])
+            style = widgets.card.get_style_context()
+            if view["active"]:
+                style.add_class("active")
             else:
-                picker.destroy()
+                style.remove_class("active")
+            self.show_action(widgets.sign, True)
+            self.show_action(widgets.existing, view["show_existing"])
+            self.show_action(widgets.choose, view["show_choose"])
+            self.show_action(widgets.disconnect, view["show_disconnect"])
+            self.show_action(widgets.use, view["show_use"])
 
-        login = next((path for path in candidate_logins() if path.is_file()), None)
-        if login:
-            body.pack_start(button("Use existing Codex sign-in", lambda _: use(login), "action", "check"), False, False, 0)
-        body.pack_start(button("Sign in with Codex", lambda _: status.set_text(self.app.start_login())), False, False, 0)
-        body.pack_start(button("Choose another Codex profile…", choose, "minimal"), False, False, 0)
-        if self.store.settings["codex_auth"]:
-            def disconnect(_control):
-                self.store.set("codex_auth", "")
-                self.refresh_status()
-                self.feedback("Codex disconnected from Revoice.")
-                dialog.response(Gtk.ResponseType.OK)
-            body.pack_start(button("Disconnect from Revoice", disconnect, "minimal"), False, False, 0)
-        body.pack_start(status, False, False, 0)
-        dialog.show_all()
-        dialog.run()
-        dialog.destroy()
+    def show_action(self, widget, visible):
+        widget.set_visible(visible)
+        parent = widget.get_parent()
+        if isinstance(parent, Gtk.FlowBoxChild):
+            parent.set_visible(visible)
+
+    def use_provider(self, provider):
+        if self.store.settings["provider"] != provider:
+            self.store.set("provider", provider)
+        if provider == "openai":
+            self.app.load_key()
+        self.refresh_status()
+
+    def use_saved_login(self, provider, path):
+        reader = claude_token if provider == "claude" else codex_token
+        setting = "claude_auth" if provider == "claude" else "codex_auth"
+        try:
+            reader(str(path))
+        except ValueError as error:
+            self.feedback(str(error), error=True)
+            return
+        self.store.set(setting, str(path))
+        self.use_provider(provider)
+        self.feedback(ACCOUNTS[provider]["connected"] + ".")
+
+    def use_existing(self, provider):
+        found = self.login_file(provider)
+        if found:
+            self.use_saved_login(provider, found)
+
+    def choose_login(self, provider):
+        picker = Gtk.FileChooserDialog(
+            title=ACCOUNTS[provider]["picker"], transient_for=self, action=Gtk.FileChooserAction.OPEN,
+        )
+        picker.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Use sign-in", Gtk.ResponseType.OK)
+        picker.set_show_hidden(True)
+        current = self.saved_login(provider)
+        folder = Path(current).parent if current else Path.home()
+        picker.set_current_folder(str(folder if folder.is_dir() else Path.home()))
+        if picker.run() == Gtk.ResponseType.OK:
+            path = picker.get_filename()
+            picker.destroy()
+            if path:
+                self.use_saved_login(provider, path)
+        else:
+            picker.destroy()
+
+    def sign_in_provider(self, provider):
+        self.use_provider(provider)
+        if provider == "openai":
+            self.api_dialog()
+            return
+        message = self.app.start_claude_login() if provider == "claude" else self.app.start_login()
+        folded = message.casefold()
+        failed = folded.startswith("install") or folded.startswith("open a terminal") or "couldn’t" in message
+        self.feedback(message, error=failed)
+
+    def disconnect_provider(self, provider):
+        if provider == "openai":
+            error = self.app.update_key("")
+            if error:
+                self.feedback(error, error=True)
+                return
+        else:
+            self.store.set("claude_auth" if provider == "claude" else "codex_auth", "")
+        self.refresh_status()
+        self.feedback(ACCOUNTS[provider]["disconnected"])
 
     def api_dialog(self):
         dialog, body = self.dialog("Connect OpenAI API", "Enter an OpenAI Platform API key. Revoice stores it in your desktop keyring.")
@@ -671,8 +986,11 @@ class Window(Gtk.ApplicationWindow):
         dialog.destroy()
 
     def confirm_clear(self):
-        dialog, body = self.dialog("Clear transcript history?", "This removes your saved Revoice transcripts from this computer.")
-        body.pack_start(button("Clear history", lambda _: dialog.response(Gtk.ResponseType.OK), "action"), False, False, 0)
+        dialog, body = self.dialog(
+            "Clear the library?",
+            f"This removes dictated text from this computer. Text is also removed on its own after {HISTORY_DAYS} days.",
+        )
+        body.pack_start(button("Clear library", lambda _: dialog.response(Gtk.ResponseType.OK), "action"), False, False, 0)
         dialog.show_all()
         confirmed = dialog.run() == Gtk.ResponseType.OK
         dialog.destroy()
@@ -683,12 +1001,16 @@ class Window(Gtk.ApplicationWindow):
             self.refresh_latest()
 
     def on_close(self, *_args):
-        self.settings_window.hide()
+        self.close_settings()
         self.hide()
         return True
 
     def on_key(self, _widget, event):
-        if event.keyval == Gdk.KEY_Escape and self.app.state != "idle":
-            self.app.cancel()
-            return True
+        if event.keyval == Gdk.KEY_Escape:
+            if self.settings_layer.get_visible():
+                self.close_settings()
+                return True
+            if self.app.state != "idle":
+                self.app.cancel()
+                return True
         return False

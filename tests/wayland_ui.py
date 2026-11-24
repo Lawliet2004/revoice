@@ -17,7 +17,7 @@ from revoice_app.desktop import (
     KDE, WAYLAND, WAYLAND_CLIPBOARD, ClipboardChanged, offer, qt_key, read_wayland_clipboard, wayland_types,
 )
 from revoice_app.visuals import cairo
-from gi.repository import GLib, Gtk
+from gi.repository import Gdk, GLib, Gtk
 
 TRANSCRIPT = "Revoice wrote this sentence — ✓"
 CTRL, SHIFT, SUPER, F8 = (ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTSHIFT, ecodes.KEY_LEFTMETA, ecodes.KEY_F8)
@@ -199,10 +199,15 @@ class DesktopTest(revoice.App):
         self.window.toggle_maximize()
         wait_for(lambda: not self.window.is_maximized(), "The title bar did not restore the window")
         self.capture(self.window, "overview")
-        self.window.navigate("settings")
-        self.window.navigate_settings("speech")
-        self.capture(self.window.settings_window, "settings")
-        self.window.settings_window.hide()
+        self.window.nav["settings"].clicked()
+        self.window.settings_nav["speech"].clicked()
+        assert self.window.settings_pages.get_visible_child_name() == "speech"
+        self.capture(self.window, "settings")
+        backdrop = self.window.settings_layer.get_child()
+        backdrop.emit("button-press-event", Gdk.Event.new(Gdk.EventType.BUTTON_PRESS))
+        assert not self.window.settings_layer.get_visible(), "Clicking the backdrop should close Settings"
+        assert self.window.current == "overview"
+        assert self.window.nav["settings"].has_focus()
         self.store.set("idle_pill", True)
         self.update_pill()
         assert not self.pill.get_visible(), "A saved idle-prompt setting must not show the HUD"

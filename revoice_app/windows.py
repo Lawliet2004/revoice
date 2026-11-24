@@ -2,16 +2,18 @@
 
 import os
 import queue
+import shutil
+import subprocess
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from .config import Store, codex_token
+from .config import Store, claude_available, claude_token, codex_token, connection_label
 from .speech import SpeechError
 from .windows_audio import WindowsRecording
 from .windows_desktop import WindowsDesktop, single_instance
 
-PROVIDERS = {"OpenAI API": "openai", "Codex sign-in": "codex"}
+PROVIDERS = {"OpenAI API": "openai", "Codex": "codex", "Claude": "claude"}
 
 
 class Dashboard:
@@ -27,6 +29,7 @@ class Dashboard:
         self.provider = tk.StringVar(value=next(label for label, key in PROVIDERS.items() if key == store.settings["provider"]))
         self.api_key = tk.StringVar(value=os.environ.get("OPENAI_API_KEY", ""))
         self.profile = tk.StringVar(value=store.settings["codex_auth"])
+        self.claude_profile = tk.StringVar(value=store.settings["claude_auth"])
         self.keep_history = tk.BooleanVar(value=store.settings["save_history"])
         self.status = tk.StringVar(value="Ready to record.")
         self.shortcut = tk.StringVar(value="Registering the global shortcut…")
@@ -54,6 +57,22 @@ class Dashboard:
         self.connection_label = ttk.Label(connection)
         self.refresh_provider()
 
+        sign = ttk.LabelFrame(main, text="Sign in", padding=10)
+        sign.pack(fill="x", pady=(0, 12))
+        codex_row = ttk.Frame(sign)
+        codex_row.pack(fill="x", pady=3)
+        ttk.Button(codex_row, text="Sign in with Codex", command=self.sign_codex).pack(side="left")
+        ttk.Button(codex_row, text="Choose Codex profile…", command=lambda: self.choose_named("codex")).pack(side="left", padx=8)
+        self.codex_state = ttk.Label(codex_row, text="Sign in to Codex")
+        self.codex_state.pack(side="left", padx=(8, 0))
+        claude_row = ttk.Frame(sign)
+        claude_row.pack(fill="x", pady=3)
+        ttk.Button(claude_row, text="Sign in with Claude", command=self.sign_claude).pack(side="left")
+        ttk.Button(claude_row, text="Choose Claude profile…", command=lambda: self.choose_named("claude")).pack(side="left", padx=8)
+        self.claude_state = ttk.Label(claude_row, text="Sign in to Claude")
+        self.claude_state.pack(side="left", padx=(8, 0))
+        self.refresh_provider()
+
         controls = ttk.Frame(main)
         controls.pack(fill="x")
         self.record_button = ttk.Button(controls, text="Record", command=self.toggle)
@@ -64,8 +83,9 @@ class Dashboard:
 
         options = ttk.Frame(main)
         options.pack(fill="x", pady=(10, 10))
-        ttk.Checkbutton(options, text="Keep local history", variable=self.keep_history,
+        ttk.Checkbutton(options, text="Keep a text library for 3 days", variable=self.keep_history,
                         command=lambda: self.save_setting("save_history", self.keep_history.get())).pack(side="left")
+        ttk.Label(options, text="Words only. Audio is not saved.").pack(side="left", padx=(12, 0))
 
 
         editor = ttk.Frame(main)
@@ -93,37 +113,82 @@ class Dashboard:
         self.api_entry.pack_forget()
         self.profile_button.pack_forget()
         self.connection_label.pack_forget()
-        if self.provider.get() == "OpenAI API":
+        provider = PROVIDERS[self.provider.get()]
+        if provider == "openai":
             self.api_entry.pack(side="left", fill="x", expand=True)
-            self.connection_label.configure(text="API key for this session")
+            ready = bool(self.api_key.get().strip())
         else:
+            self.profile_button.configure(text="Choose Claude profile…" if provider == "claude" else "Choose Codex profile…")
             self.profile_button.pack(side="left")
-            self.connection_label.configure(text=Path(self.profile.get()).parent.name if self.profile.get() else "Choose auth.json")
+            path = self.claude_profile.get() if provider == "claude" else self.profile.get()
+            ready = claude_available(path) if provider == "claude" else bool(path)
+        self.connection_label.configure(text=connection_label(provider, ready))
         self.connection_label.pack(side="left", padx=(8, 0))
+        if getattr(self, "codex_state", None):
+            self.codex_state.configure(text=connection_label("codex", bool(self.profile.get())))
+            self.claude_state.configure(text=connection_label("claude", claude_available(self.claude_profile.get())))
+
+    def sign_codex(self):
+        self.provider.set("Codex")
+        self.change_provider(None)
+        self.status.set(self.open_cli("codex", ["login"], "Codex"))
+
+    def sign_claude(self):
+        self.provider.set("Claude")
+        self.change_provider(None)
+        self.status.set(self.open_cli("claude", [], "Claude Code"))
+
+    def choose_named(self, provider):
+        self.provider.set("Claude" if provider == "claude" else "Codex")
+        self.change_provider(None)
+        self.choose_profile()
+
+    def open_cli(self, program, args, title):
+        binary = shutil.which(program)
+        if not binary:
+            return f"Install the {title} CLI, then choose the sign-in file."
+        try:
+            subprocess.Popen(["cmd", "/c", "start", "", binary, *args])
+        except OSError:
+            return f"Revoice couldn’t open {title}. Choose the sign-in file instead."
+        return f"Finish signing in with {title}, then choose that profile."
 
     def change_provider(self, _event):
         self.save_setting("provider", PROVIDERS[self.provider.get()])
         self.refresh_provider()
 
     def choose_profile(self):
-        codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+        provider = PROVIDERS[self.provider.get()]
+        claude = provider == "claude"
+        if claude:
+            home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+            title = "Choose Claude credentials"
+            reader = claude_token
+        else:
+            home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+            title = "Choose Codex auth.json"
+            reader = codex_token
         self.in_dialog = True
         try:
             path = filedialog.askopenfilename(
-                parent=self.root, title="Choose Codex auth.json",
-                initialdir=codex_home if codex_home.is_dir() else Path.home(),
+                parent=self.root, title=title,
+                initialdir=home if home.is_dir() else Path.home(),
                 filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
             )
         finally:
             self.in_dialog = False
         if path:
             try:
-                codex_token(path)
+                reader(path)
             except ValueError as error:
                 self.status.set(str(error))
                 return
-            self.profile.set(path)
-            self.save_setting("codex_auth", path)
+            if claude:
+                self.claude_profile.set(path)
+                self.save_setting("claude_auth", path)
+            else:
+                self.profile.set(path)
+                self.save_setting("codex_auth", path)
             self.refresh_provider()
 
     def save_setting(self, key, value):
@@ -135,6 +200,8 @@ class Dashboard:
     def credential(self, provider):
         if provider == "codex":
             return codex_token(self.profile.get())
+        if provider == "claude":
+            return claude_token(self.claude_profile.get())
         key = self.api_key.get().strip()
         if not key:
             raise ValueError("Enter an OpenAI API key before recording.")
@@ -189,7 +256,13 @@ class Dashboard:
         self.poll_timer = self.root.after(35, self.poll)
 
     def finish(self, generation, kind, values):
-        if generation != self.generation or self.recording is None or kind not in ("error", "result"):
+        if generation != self.generation or self.recording is None:
+            return
+        if kind == "partial":
+            if self.state == "recording" and values and isinstance(values[0], str):
+                self.display(values[0])
+            return
+        if kind not in ("error", "result"):
             return
         message = values[0] if kind == "error" else "Transcript ready to copy."
         if kind == "error":
@@ -202,10 +275,13 @@ class Dashboard:
             try:
                 self.store.add(text, duration)
             except OSError:
-                message += " Couldn’t save to history."
+                message += " Couldn’t save to the library."
+            else:
+                if self.store.settings["save_history"]:
+                    message += " Saved in your library for 3 days."
             self.refresh_history()
             if kind == "error":
-                message += " Partial transcript ready to copy."
+                message += " Partial text is ready to copy."
         self.set_state("idle", message)
 
     def display(self, text):
@@ -227,7 +303,7 @@ class Dashboard:
     def refresh_history(self):
         self.history.configure(values=[f"{index + 1}. {' '.join(row['text'].split())[:56]}"
                                        for index, row in enumerate(self.store.history)])
-        self.history.set("Recent transcripts" if self.store.history else "History is empty")
+        self.history.set("Text library" if self.store.history else "Library is empty")
 
     def load_history(self, _event):
         index = self.history.current()
@@ -237,7 +313,7 @@ class Dashboard:
     def clear_history(self):
         self.in_dialog = True
         try:
-            confirmed = messagebox.askyesno("Clear history", "Delete saved Revoice transcripts?", parent=self.root)
+            confirmed = messagebox.askyesno("Clear library", "Delete saved Revoice text? Audio is never stored.", parent=self.root)
         finally:
             self.in_dialog = False
         if confirmed:

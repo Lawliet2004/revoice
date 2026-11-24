@@ -31,6 +31,7 @@ MODIFIERS = {"Ctrl": 0x04000000, "Shift": 0x02000000,
 KWIN_MODIFIERS = {"Alt": 1 << 3, "Ctrl": 1 << 4, "Shift": 1 << 5, "Super": 1 << 6}
 MODIFIER_CONFIRMATION_MS = 150
 PASTE_CLIPBOARD_GRACE = .9
+BROWSER_PASTE_GRACE = 2.0
 PASTE_READ_TIMEOUT = 2.0
 NAMED_KEYS = {"Space": 0x20, "Tab": 0x01000001, "Enter": 0x01000004,
               "Backspace": 0x01000003, "Escape": 0x01000000,
@@ -43,6 +44,14 @@ NO_AUTOLOAD = 4
 MARKER = "application/x-revoice-paste-"
 TEXT_MIMES = ("text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT")
 TERMINAL = re.compile(r"terminal|konsole|alacritty|kitty|wezterm|foot|ghostty|xterm|terminator|tilix|ptyxis|yakuake|contour", re.I)
+BROWSER = re.compile(r"chrom|firefox|brave|edge|vivaldi|librewolf|waterfox|epiphany|falkon|qutebrowser|opera|webkit", re.I)
+
+
+def clipboard_grace(app_class):
+    # Browser pages often read the clipboard after the paste event returns.
+    if BROWSER.search(app_class or ""):
+        return BROWSER_PASTE_GRACE
+    return PASTE_CLIPBOARD_GRACE
 
 
 def qt_key(shortcut):
@@ -561,7 +570,7 @@ class Paste:
             readable, _, _ = select.select([current.stdout], [], [], PASTE_READ_TIMEOUT)
             if not readable or b"read" not in os.read(current.stdout.fileno(), 4096):
                 raise ClipboardError("Revoice couldn’t confirm that the app read the clipboard. The transcript is available to copy.")
-            time.sleep(max(0, sent_at + PASTE_CLIPBOARD_GRACE - time.monotonic()))
+            time.sleep(max(0, sent_at + clipboard_grace(original[1]) - time.monotonic()))
         finally:
             try:
                 if previous:
@@ -596,7 +605,7 @@ class Paste:
         try:
             self.wait_for_release(original, allowed)
             self.send_keys(terminal)
-            time.sleep(PASTE_CLIPBOARD_GRACE)
+            time.sleep(clipboard_grace(original[1]))
             clip = subprocess.run(["xclip", "-selection", "clipboard", "-o"],
                                   capture_output=True, timeout=1)
             if clip.stdout == text.encode("utf-8") and previous.returncode == 0:

@@ -20,6 +20,7 @@ select { border: 1px solid var(--color-line); min-width: 116px; }
 .primary:hover:enabled { background: var(--color-action-hover); }
 kbd { border: 1px solid var(--color-line); background: var(--color-surface-3); border-radius: 5px; padding: 1px 5px; font: inherit; }
 .recent-section { margin-top: 30px; }
+.library-note { margin: 0 0 8px; }
 .recent-section header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .recent-section h2 { font: 500 var(--text-xl) var(--font-display); }
 .recent-section p, #feedback { font-size: var(--text-sm); color: var(--color-muted); }
@@ -34,7 +35,7 @@ kbd { border: 1px solid var(--color-line); background: var(--color-surface-3); b
   .manuscript-head { gap: 16px; }
 }
 
-/* Warm paper finishes for the open manuscript. The overlay has its own palette. */
+/* Warm paper finishes for the open manuscript. Appearance settings rewrite the variables. */
 body.manuscript-home {
   --color-surface: #fffae9;
   --color-surface-3: #f6e8b8;
@@ -43,18 +44,28 @@ body.manuscript-home {
   --color-accent: #79501b;
   --color-muted: #6d583c;
   --color-faint: #756348;
-  background: radial-gradient(ellipse at 98% 0%, #f8e9b7 0%, transparent 48%), var(--color-surface);
+  --color-ink: #29231e;
+  --color-glow: #f8e9b7;
+  --color-sheet: #fffdf2;
+  --color-head-a: #fbf0ca;
+  --color-head-b: #f7e5af;
+  --color-head-c: #fbefcc;
+  --color-foot: #fffae8;
+  --color-record: #684722;
+  --color-record-hover: #8b581e;
+  --color-on-record: #fffae9;
+  background: radial-gradient(ellipse at 98% 0%, var(--color-glow) 0%, transparent 48%), var(--color-surface);
   background-repeat: no-repeat;
   min-height: 100vh;
 }
 .manuscript-home .workspace-page { padding-top: 36px; }
 .manuscript-home .page-heading { align-items: center; margin-bottom: 24px; }
-.manuscript-home .page-heading h1 { font-size: 38px; letter-spacing: -.035em; }
+.manuscript-home .page-heading h1 { font-size: 2.714rem; letter-spacing: -.035em; }
 .manuscript-home .page-heading select {
   appearance: none;
   padding: 8px 30px 8px 12px;
-  background: #fff6da;
-  background-image: linear-gradient(45deg, transparent 50%, #79501b 50%), linear-gradient(135deg, #79501b 50%, transparent 50%);
+  background-color: var(--color-sheet);
+  background-image: linear-gradient(45deg, transparent 50%, var(--color-accent) 50%), linear-gradient(135deg, var(--color-accent) 50%, transparent 50%);
   background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%;
   background-size: 5px 5px;
   background-repeat: no-repeat;
@@ -63,36 +74,37 @@ body.manuscript-home {
 .manuscript-home .manuscript {
   --gutter: clamp(22px, 5vw, 54px);
   overflow: hidden;
-  background: #fffdf2;
-  box-shadow: 0 12px 30px -23px #9d6d34;
-}
-.manuscript-home .manuscript-head {
-  position: relative;
-  padding-block: 31px;
-  background: linear-gradient(102deg, #fbf0ca, #f7e5af 76%, #fbefcc);
+  background: var(--color-sheet);
+  box-shadow: 0 12px 30px -23px color-mix(in srgb, var(--color-accent) 55%, transparent);
 }
 .manuscript-home .manuscript-status { position: relative; z-index: 1; }
 .manuscript-art { width: clamp(135px, 25%, 203px); height: 112px; object-fit: contain; flex: none; pointer-events: none; }
+.manuscript-home .manuscript-head {
+  position: relative;
+  padding-block: 31px;
+  background: linear-gradient(102deg, var(--color-head-a), var(--color-head-b) 76%, var(--color-head-c));
+}
 .manuscript-home .record-button {
-  --ring: #c4963930;
-  --ring-edge: #a36b3960;
-  background: #684722;
-  color: #fffae9;
-  box-shadow: 0 0 0 5px #fff7db, 0 0 0 6px #dec38a;
+  --ring: color-mix(in srgb, var(--color-accent) 19%, transparent);
+  --ring-edge: color-mix(in srgb, var(--color-accent) 38%, transparent);
+  background: var(--color-record);
+  color: var(--color-on-record);
+  box-shadow: 0 0 0 5px var(--color-sheet), 0 0 0 6px var(--color-line);
 }
 .manuscript-home .record-button:hover:enabled,
-.manuscript-home .record-button.is-recording { background: #8b581e; }
+.manuscript-home .record-button.is-recording { background: var(--color-record-hover); }
 .manuscript-home .record-button.is-recording {
   box-shadow: 0 0 0 calc(6px + var(--level) * 18px) var(--ring), 0 0 0 calc(7px + var(--level) * 18px) var(--ring-edge);
 }
 .manuscript-home .manuscript-text {
   min-height: 208px;
-  font-size: 19px;
+  font-size: 1.357rem;
   padding-block: 24px;
 }
-.manuscript-home .manuscript-foot { background: #fffae8; }
-.manuscript-home .primary { background: #684722; color: #fffae9; }
-.manuscript-home .primary:hover:enabled { background: #815622; }
+.manuscript-home .manuscript-text.is-listening { caret-color: var(--color-accent); }
+.manuscript-home .manuscript-foot { background: var(--color-foot); }
+.manuscript-home .primary { background: var(--color-record); color: var(--color-on-record); }
+.manuscript-home .primary:hover:enabled { background: var(--color-record-hover); }
 .manuscript-home .recent-section { margin-top: 26px; }
 @media (prefers-reduced-motion: no-preference) {
   .manuscript-home .workspace-page { animation: manuscript-arrive 260ms ease-out both; }

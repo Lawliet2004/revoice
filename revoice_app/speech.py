@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 import wave
@@ -32,6 +33,10 @@ PAUSE_SPLIT_BYTES = (SEGMENT_SECONDS - 15) * BYTES_PER_SECOND
 BUFFERED_CHUNKS = (SEGMENT_SECONDS + 60) * BYTES_PER_SECOND // CHUNK
 STREAM_URL = "wss://chatgpt.com/backend-api/dictation/stream"
 API_URL = "https://api.openai.com/v1/audio/transcriptions"
+CLAUDE_VOICE = "wss://api.anthropic.com/api/ws/speech_to_text/voice_stream"
+CLAUDE_AGENT = "claude-cli/2.1.72 (external, cli)"
+CLAUDE_QUIET = 1.5
+KEEPALIVE_SECONDS = 8
 
 
 class SpeechError(Exception):
@@ -43,6 +48,8 @@ class Cancelled(Exception):
 
 
 def level(pcm):
+    if len(pcm) % 2:
+        pcm = pcm[:-1]
     values = array("h", pcm)
     if not values:
         return 0.0
@@ -132,9 +139,13 @@ class Recording:
             completed = text
 
         try:
-            if self.settings["provider"] == "codex":
-                result = codex_dictate(self.audio, self.credential, self.settings["language"],
-                                       self.cancelled, lambda text: self.emit("partial", text), finalized)
+            provider = self.settings["provider"]
+            args = (self.audio, self.credential, self.settings["language"], self.cancelled,
+                    lambda text: self.emit("partial", text), finalized)
+            if provider == "codex":
+                result = codex_dictate(*args)
+            elif provider == "claude":
+                result = claude_dictate(*args)
             else:
                 result = api_segments(self.audio, self.credential, self.settings["language"], self.cancelled, finalized)
             if self.cancelled.is_set():
@@ -319,6 +330,143 @@ def codex_session(audio, pcm, token, language, cancelled, partial, finalized):
         if active:
             raise SpeechError("Codex closed the session before all transcript segments were ready.")
         return " ".join(finals[item] for item in order if finals.get(item)), finished
+
+
+def connect_headers(url, headers, **options):
+    agent = headers.get("User-Agent")
+    extra = [(key, value) for key, value in headers.items() if key.lower() != "user-agent"]
+    try:
+        return connect(url, additional_headers=extra, user_agent_header=agent, **options)
+    except TypeError:
+        return connect(url, extra_headers=dict(headers), **options)
+
+
+def claude_dictate(audio, token, language, cancelled, partial, finalized=None):
+    """Stream PCM to Claude Code's speech service and join its finished utterances."""
+    transcripts = []
+    finished = False
+    while not finished and not cancelled.is_set():
+        first = audio.get()
+        if first is None:
+            break
+
+        def finalize_session(text, earlier=tuple(transcripts)):
+            if finalized:
+                finalized(" ".join(part for part in (*earlier, text) if part))
+
+        text, finished = claude_session(audio, first, token, language, cancelled, partial, finalize_session)
+        if text:
+            transcripts.append(text)
+    if cancelled.is_set():
+        raise Cancelled
+    return " ".join(transcripts)
+
+
+def claude_session(audio, pcm, token, language, cancelled, partial, finalized):
+    if cancelled.is_set():
+        raise Cancelled
+    params = {"encoding": "linear16", "sample_rate": RATE, "channels": 1,
+              "endpointing_ms": 300, "utterance_end_ms": 1000}
+    if language:
+        params["language"] = language
+    url = CLAUDE_VOICE + "?" + urllib.parse.urlencode(params)
+    headers = {"Authorization": "Bearer " + token, "User-Agent": CLAUDE_AGENT, "x-app": "cli"}
+    committed = []
+    interim = ""
+    with connect_headers(url, headers, open_timeout=8, close_timeout=1, ping_interval=None) as socket:
+        def send_json(payload):
+            socket.send(json.dumps(payload, separators=(",", ":")))
+
+        def receive(timeout):
+            try:
+                message = socket.recv(timeout=timeout)
+            except TimeoutError:
+                return {}
+            if isinstance(message, (bytes, bytearray)):
+                return {}
+            try:
+                event = json.loads(message)
+            except ValueError:
+                raise SpeechError("Claude returned an invalid dictation response.") from None
+            if not isinstance(event, dict):
+                raise SpeechError("Claude returned an invalid dictation response.")
+            return event
+
+        def publish():
+            partial(" ".join(part for part in (*committed, interim) if part).strip())
+            if finalized:
+                finalized(" ".join(committed))
+
+        def handle(event):
+            nonlocal interim
+            kind = event.get("type")
+            if kind in ("TranscriptError", "error"):
+                details = event.get("error")
+                code = event.get("error_code") or (details.get("code") if isinstance(details, dict) else None)
+                if code in ("unauthorized", "invalid_token", "permission_denied"):
+                    raise SpeechError("Claude sign-in expired or was declined. Reconnect in Settings.")
+                raise SpeechError("Claude couldn’t finish this dictation. Try a new recording.")
+            if kind == "TranscriptText":
+                text = event.get("data") if "data" in event else event.get("text")
+                if text in ("", None):
+                    interim = ""
+                elif not valid_text(text):
+                    raise SpeechError("Claude returned an invalid transcript.")
+                else:
+                    interim = text.strip()
+                publish()
+            elif kind == "TranscriptEndpoint" and interim:
+                committed.append(interim)
+                interim = ""
+                publish()
+
+        send_json({"type": "KeepAlive"})
+        keepalive = rotate_at = time.monotonic()
+        rotate_at += SEGMENT_SECONDS
+        finished = False
+        session_bytes = 0
+        quiet_chunks = 0
+        while not cancelled.is_set():
+            if pcm is None:
+                finished = True
+                break
+            if pcm:
+                socket.send(pcm)
+                session_bytes += len(pcm)
+                quiet_chunks = quiet_chunks + 1 if level(pcm) < 0.26 else 0
+            if time.monotonic() - keepalive >= KEEPALIVE_SECONDS:
+                send_json({"type": "KeepAlive"})
+                keepalive = time.monotonic()
+            event = receive(0)
+            while event:
+                handle(event)
+                event = receive(0)
+            if (time.monotonic() >= rotate_at or session_bytes >= SEGMENT_BYTES
+                    or (session_bytes >= PAUSE_SPLIT_BYTES and quiet_chunks >= 4)):
+                break
+            try:
+                pcm = audio.get(timeout=.025)
+            except queue.Empty:
+                pcm = b""
+        if cancelled.is_set():
+            raise Cancelled
+        send_json({"type": "CloseStream"})
+        deadline = time.monotonic() + 5
+        quiet_since = time.monotonic()
+        while time.monotonic() < deadline and not cancelled.is_set():
+            event = receive(0.1)
+            if not event:
+                if time.monotonic() - quiet_since >= CLAUDE_QUIET:
+                    break
+                continue
+            quiet_since = time.monotonic()
+            handle(event)
+        if cancelled.is_set():
+            raise Cancelled
+        if interim:
+            committed.append(interim)
+            publish()
+        return " ".join(committed), finished
 
 
 def api_segments(audio, key, language, cancelled, finalized=None):

@@ -50,6 +50,29 @@ class DictationSocket:
         return json.dumps(self.events.popleft())
 
 
+class ClaudeSocket:
+    def __init__(self, closing):
+        self.closing = [json.dumps(event) for event in closing]
+        self.events = deque()
+        self.sent = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_failure):
+        return False
+
+    def send(self, message):
+        self.sent.append(message)
+        if isinstance(message, str) and json.loads(message).get("type") == "CloseStream":
+            self.events.extend(self.closing)
+
+    def recv(self, timeout):
+        if not self.events:
+            raise TimeoutError
+        return self.events.popleft()
+
+
 class ContinuousDictationTests(unittest.TestCase):
     def setUp(self):
         self.chunks = [bytes((value, 0)) * (speech.CHUNK // 2) for value in range(1, 6)]
@@ -97,8 +120,49 @@ class ContinuousDictationTests(unittest.TestCase):
                 speech.codex_dictate(audio_queue(*self.chunks), "test", "", self.cancelled, lambda _: None)
             with self.assertRaises(speech.Cancelled):
                 speech.api_segments(audio_queue(*self.chunks), "test", "", self.cancelled)
+            with self.assertRaises(speech.Cancelled):
+                speech.claude_dictate(audio_queue(*self.chunks), "test", "", self.cancelled, lambda _: None)
             connect.assert_not_called()
             transcribe.assert_not_called()
+
+    def test_claude_streams_audio_and_joins_finished_utterances(self):
+        socket = ClaudeSocket([
+            {"type": "TranscriptText", "data": "Hello"},
+            {"type": "TranscriptEndpoint"},
+            {"type": "TranscriptText", "data": "world"},
+            {"type": "TranscriptEndpoint"},
+        ])
+        seen = []
+        with patch.object(speech, "CLAUDE_QUIET", 0), patch.object(speech, "connect", return_value=socket) as connect:
+            text = speech.claude_dictate(audio_queue(b"\x00\x10" * 80), "token", "en", self.cancelled, seen.append)
+        self.assertEqual(text, "Hello world")
+        self.assertIn("Hello", seen)
+        self.assertTrue(any(isinstance(item, bytes) and item for item in socket.sent))
+        self.assertIn('{"type":"KeepAlive"}', socket.sent)
+        self.assertIn('{"type":"CloseStream"}', socket.sent)
+        url = connect.call_args.args[0]
+        self.assertIn("/api/ws/speech_to_text/voice_stream", url)
+        self.assertIn("language=en", url)
+        self.assertEqual(connect.call_args.kwargs["user_agent_header"], speech.CLAUDE_AGENT)
+        self.assertIn(("x-app", "cli"), connect.call_args.kwargs["additional_headers"])
+        self.assertTrue(dict(connect.call_args.kwargs["additional_headers"])["Authorization"].startswith("Bearer "))
+
+    def test_claude_error_keeps_text_that_already_arrived(self):
+        recording, events = self.recording("claude")
+        socket = ClaudeSocket([
+            {"type": "TranscriptText", "data": "Completed text."},
+            {"type": "TranscriptEndpoint"},
+            {"type": "TranscriptError", "error_code": "timeout"},
+        ])
+        with patch.object(speech, "CLAUDE_QUIET", 0), patch.object(speech, "connect", return_value=socket):
+            recording.transcribe()
+        error = next(event for event in events if event[0] == "error")
+        self.assertIn("Claude couldn’t finish", error[1])
+        self.assertEqual(error[2:], ("Completed text.", .2))
+        self.assertIn(("partial", "Completed text."), events)
+
+    def test_level_ignores_a_trailing_odd_byte(self):
+        self.assertGreaterEqual(speech.level(b"\x00\x10\xff"), 0)
 
     def test_api_later_failure_reports_completed_text(self):
         recording, events = self.recording("openai")
